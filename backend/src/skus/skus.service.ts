@@ -16,13 +16,19 @@ export class SkusService {
   constructor(private readonly prisma: PrismaService) {}
 
   // Get all SKUs
-  async findAll() {
-    return this.prisma.sKU.findMany({
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
-  }
+async findAll(includeInactive: boolean = false) {
+  return this.prisma.sKU.findMany({
+    where: includeInactive
+      ? {}
+      : {
+          isActive: true,
+        },
+    orderBy: {
+      createdAt: 'desc',
+    },
+  });
+}
+
 
   // Get a single SKU by ID
   async findOne(id: string) {
@@ -65,6 +71,36 @@ export class SkusService {
       throw error;
     }
   }
+
+
+  // Soft delete an SKU
+  
+async remove(id: string) {
+  const sku = await this.prisma.sKU.findUnique({
+    where: { id },
+  });
+
+  if (!sku) {
+    throw new NotFoundException(
+      `SKU with ID ${id} not found`,
+    );
+  }
+
+  if (!sku.isActive) {
+    throw new ConflictException(
+      `SKU with ID ${id} is already inactive`,
+    );
+  }
+
+  return this.prisma.sKU.update({
+    where: { id },
+    data: {
+      isActive: false,
+    },
+  });
+}
+
+
 
   // Update an existing SKU
   async update(id: string, dto: UpdateSkuDto) {
