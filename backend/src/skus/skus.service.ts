@@ -3,41 +3,45 @@ import {
   Injectable,
   ConflictException,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 
 import { Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateSkuDto } from './dto/create-sku.dto.js';
-
-
-
+import { UpdateSkuDto } from './dto/update-sku.dto.js';
 
 @Injectable()
 export class SkusService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // Get all SKUs
   async findAll() {
-  return this.prisma.sKU.findMany({
-    orderBy: {
-      createdAt: 'desc',
-    },
-  });
-}
-
-async findOne(id: string) {
-  const sku = await this.prisma.sKU.findUnique({
-    where: {
-      id: id,
-    },
-  });
-
-  if (!sku) {
-    throw new NotFoundException(`SKU with ID ${id} not found`);
+    return this.prisma.sKU.findMany({
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
   }
 
-  return sku;
-}
+  // Get a single SKU by ID
+  async findOne(id: string) {
+    const sku = await this.prisma.sKU.findUnique({
+      where: {
+        id: id,
+      },
+    });
 
+    if (!sku) {
+      throw new NotFoundException(
+        `SKU with ID ${id} not found`,
+      );
+    }
+
+    return sku;
+  }
+
+  // Create a new SKU
   async create(dto: CreateSkuDto) {
     try {
       return await this.prisma.sKU.create({
@@ -53,7 +57,47 @@ async findOne(id: string) {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        throw new ConflictException('SKU code already exists');
+        throw new ConflictException(
+          'SKU code already exists',
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  // Update an existing SKU
+  async update(id: string, dto: UpdateSkuDto) {
+    const hasUpdate = Object.values(dto).some(
+      (value) => value !== undefined,
+    );
+
+    if (!hasUpdate) {
+      throw new BadRequestException(
+        'At least one field must be provided',
+      );
+    }
+
+    try {
+      return await this.prisma.sKU.update({
+        where: { id },
+        data: dto,
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError
+      ) {
+        if (error.code === 'P2025') {
+          throw new NotFoundException(
+            `SKU with ID ${id} not found`,
+          );
+        }
+
+        if (error.code === 'P2002') {
+          throw new ConflictException(
+            'SKU code already exists',
+          );
+        }
       }
 
       throw error;
