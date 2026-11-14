@@ -9,3 +9,5 @@ coverage/
 .DS_Store
 backend/src/generated/
 '@ | Set-Content -Encoding Ascii .gitignore
+# Runtime logs
+*.log

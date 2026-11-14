@@ -7,6 +7,7 @@ import { WarehousesModule } from './warehouses/warehouses.module.js';
 import { InventoryModule } from './inventory/inventory.module.js';
 import { InboundReceiptsModule } from './inbound-receipts/inbound-receipts.module.js';
 import { OrdersModule } from './orders/orders.module.js';
+import { AllocationModule } from './allocation/allocation.module.js';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { OrdersModule } from './orders/orders.module.js';
     InventoryModule,
     InboundReceiptsModule,
     OrdersModule,
+    AllocationModule,
   ],
   controllers: [AppController],
 })
