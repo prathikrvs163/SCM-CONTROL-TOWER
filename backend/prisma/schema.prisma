@@ -7,31 +7,38 @@ datasource db {
   provider = "mysql"
 }
 
-model SKU {
-  id          String   @id @default(cuid())
-  skuCode     String   @unique
-  name        String
-  description String?
-  unit        String   @default("EA")
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  inventoryAdjustments InventoryAdjustment[]
+enum ReceiptStatus {
+  PLANNED
+  IN_TRANSIT
+  RECEIVED
+  CANCELED
+}
 
-  inventories Inventory[]
+model SKU {
+  id                   String                @id @default(cuid())
+  skuCode              String                @unique
+  name                 String
+  description          String?
+  unit                 String                @default("EA")
+  isActive             Boolean               @default(true)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  inventoryAdjustments InventoryAdjustment[]
+  inboundReceipts      InboundReceipt[]
+  inventories          Inventory[]
 }
 
 model Warehouse {
-  id        String   @id @default(cuid())
-  code      String   @unique
-  name      String
-  city      String
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                   String                @id @default(cuid())
+  code                 String                @unique
+  name                 String
+  city                 String
+  isActive             Boolean               @default(true)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
   inventoryAdjustments InventoryAdjustment[]
-
-  inventories Inventory[]
+  inboundReceipts      InboundReceipt[]
+  inventories          Inventory[]
 }
 
 model Inventory {
@@ -61,4 +68,23 @@ model InventoryAdjustment {
   warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
 
   @@index([skuId, warehouseId, createdAt])
+}
+
+model InboundReceipt {
+  id                  String        @id @default(cuid())
+  receiptId           String        @unique
+  skuId               String
+  warehouseId         String
+  expectedArrivalTime DateTime
+  quantity            Int
+  status              ReceiptStatus @default(PLANNED)
+  receivedAt          DateTime?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  sku       SKU       @relation(fields: [skuId], references: [id], onDelete: Restrict)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@index([skuId, warehouseId, status])
+  @@index([expectedArrivalTime])
 }
