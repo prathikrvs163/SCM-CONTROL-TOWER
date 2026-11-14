@@ -8,6 +8,7 @@ import { InventoryModule } from './inventory/inventory.module.js';
 import { InboundReceiptsModule } from './inbound-receipts/inbound-receipts.module.js';
 import { OrdersModule } from './orders/orders.module.js';
 import { AllocationModule } from './allocation/allocation.module.js';
+import { ExceptionsModule } from './exceptions/exceptions.module.js';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { AllocationModule } from './allocation/allocation.module.js';
     InboundReceiptsModule,
     OrdersModule,
     AllocationModule,
+    ExceptionsModule,
   ],
   controllers: [AppController],
 })

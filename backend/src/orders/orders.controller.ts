@@ -26,6 +26,11 @@ export class OrdersController {
     return this.ordersService.findAll();
   }
 
+  @Get(':id/timeline')
+  getTimeline(@Param('id') id: string) {
+    return this.ordersService.getTimeline(id);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.ordersService.findOne(id);

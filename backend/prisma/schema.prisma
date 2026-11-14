@@ -114,6 +114,7 @@ model Order {
   status            OrderStatus   @default(DRAFT)
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
+  statusHistory OrderStatusHistory[]
 
   lines OrderLine[]
 
@@ -138,4 +139,16 @@ model OrderLine {
   @@index([orderId])
   @@index([skuId])
   @@index([preferredWarehouseId])
+}
+
+model OrderStatusHistory {
+  id         String      @id @default(cuid())
+  orderId    String
+  fromStatus OrderStatus?
+  toStatus   OrderStatus
+  changedAt  DateTime    @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, changedAt])
 }
