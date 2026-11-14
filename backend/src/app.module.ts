@@ -6,6 +6,7 @@ import { SkusModule } from './skus/skus.module.js';
 import { WarehousesModule } from './warehouses/warehouses.module.js';
 import { InventoryModule } from './inventory/inventory.module.js';
 import { InboundReceiptsModule } from './inbound-receipts/inbound-receipts.module.js';
+import { OrdersModule } from './orders/orders.module.js';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { InboundReceiptsModule } from './inbound-receipts/inbound-receipts.modul
     WarehousesModule,
     InventoryModule,
     InboundReceiptsModule,
+    OrdersModule,
   ],
   controllers: [AppController],
 })

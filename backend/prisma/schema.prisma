@@ -14,6 +14,20 @@ enum ReceiptStatus {
   CANCELED
 }
 
+enum OrderPriority {
+  LOW
+  MED
+  HIGH
+}
+
+enum OrderStatus {
+  DRAFT
+  CONFIRMED
+  FULFILLING
+  SHIPPED
+  CANCELED
+}
+
 model SKU {
   id                   String                @id @default(cuid())
   skuCode              String                @unique
@@ -26,6 +40,7 @@ model SKU {
   inventoryAdjustments InventoryAdjustment[]
   inboundReceipts      InboundReceipt[]
   inventories          Inventory[]
+  orderLines           OrderLine[]
 }
 
 model Warehouse {
@@ -39,6 +54,7 @@ model Warehouse {
   inventoryAdjustments InventoryAdjustment[]
   inboundReceipts      InboundReceipt[]
   inventories          Inventory[]
+  preferredOrderLines  OrderLine[]
 }
 
 model Inventory {
@@ -87,4 +103,39 @@ model InboundReceipt {
 
   @@index([skuId, warehouseId, status])
   @@index([expectedArrivalTime])
+}
+
+model Order {
+  id                String        @id @default(cuid())
+  orderNumber       String        @unique
+  customerName      String
+  priority          OrderPriority @default(MED)
+  requestedShipDate DateTime?
+  status            OrderStatus   @default(DRAFT)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  lines OrderLine[]
+
+  @@index([status, priority])
+  @@index([requestedShipDate])
+}
+
+model OrderLine {
+  id                   String   @id @default(cuid())
+  orderId              String
+  skuId                String
+  quantity             Int
+  preferredWarehouseId String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  sku   SKU   @relation(fields: [skuId], references: [id], onDelete: Restrict)
+
+  preferredWarehouse Warehouse? @relation(fields: [preferredWarehouseId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([skuId])
+  @@index([preferredWarehouseId])
 }
