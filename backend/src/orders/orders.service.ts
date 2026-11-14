@@ -78,23 +78,35 @@ export class OrdersService {
     await this.validateLines(dto.lines);
 
     try {
-      return await this.prisma.order.create({
-        data: {
-          orderNumber: dto.orderNumber.trim(),
-          customerName: dto.customerName.trim(),
-          priority: dto.priority ?? 'MED',
-          requestedShipDate: dto.requestedShipDate
-            ? new Date(dto.requestedShipDate)
-            : undefined,
-          lines: {
-            create: dto.lines.map((line) => ({
-              skuId: line.skuId,
-              quantity: line.quantity,
-              preferredWarehouseId: line.preferredWarehouseId,
-            })),
+      return await this.prisma.$transaction(async (tx) => {
+        const order = await tx.order.create({
+          data: {
+            orderNumber: dto.orderNumber.trim(),
+            customerName: dto.customerName.trim(),
+            priority: dto.priority ?? 'MED',
+            requestedShipDate: dto.requestedShipDate
+              ? new Date(dto.requestedShipDate)
+              : undefined,
+            lines: {
+              create: dto.lines.map((line) => ({
+                skuId: line.skuId,
+                quantity: line.quantity,
+                preferredWarehouseId: line.preferredWarehouseId,
+              })),
+            },
           },
-        },
-        include: this.orderInclude,
+          include: this.orderInclude,
+        });
+
+        await tx.orderStatusHistory.create({
+          data: {
+            orderId: order.id,
+            fromStatus: null,
+            toStatus: 'DRAFT',
+          },
+        });
+
+        return order;
       });
     } catch (error) {
       if (
@@ -123,6 +135,31 @@ export class OrdersService {
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: this.orderInclude,
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    return order;
+  }
+
+  async getTimeline(id: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        orderNumber: true,
+        customerName: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        statusHistory: {
+          orderBy: {
+            changedAt: 'asc',
+          },
+        },
+      },
     });
 
     if (!order) {
@@ -284,8 +321,7 @@ export class OrdersService {
       }
 
       return this.prisma.$transaction(async (tx) => {
-        // Claim the shipment first. This prevents a second request
-        // from shipping and deducting the same order again.
+        // Claim the shipment first to prevent duplicate deductions.
         const statusResult = await tx.order.updateMany({
           where: {
             id,
@@ -302,7 +338,16 @@ export class OrdersService {
           );
         }
 
-        // Deduct stock atomically and create an audit record.
+        // Record the successful status transition.
+        await tx.orderStatusHistory.create({
+          data: {
+            orderId: id,
+            fromStatus: 'FULFILLING',
+            toStatus: 'SHIPPED',
+          },
+        });
+
+        // Deduct stock atomically and create audit records.
         for (const deduction of deductions.values()) {
           const inventoryResult = await tx.inventory.updateMany({
             where: {
@@ -343,20 +388,33 @@ export class OrdersService {
     }
 
     // Non-shipment transitions retain the existing behavior.
-    const result = await this.prisma.order.updateMany({
-      where: {
-        id,
-        status: order.status,
-      },
-      data: { status },
+    return this.prisma.$transaction(async (tx) => {
+      const result = await tx.order.updateMany({
+        where: {
+          id,
+          status: order.status,
+        },
+        data: { status },
+      });
+
+      if (result.count === 0) {
+        throw new ConflictException(
+          'Order status changed concurrently. Fetch the order and try again.',
+        );
+      }
+
+      await tx.orderStatusHistory.create({
+        data: {
+          orderId: id,
+          fromStatus: order.status,
+          toStatus: status,
+        },
+      });
+
+      return tx.order.findUnique({
+        where: { id },
+        include: this.orderInclude,
+      });
     });
-
-    if (result.count === 0) {
-      throw new ConflictException(
-        'Order status changed concurrently. Fetch the order and try again.',
-      );
-    }
-
-    return this.findOne(id);
   }
 }
