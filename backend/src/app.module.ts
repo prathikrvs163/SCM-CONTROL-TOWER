@@ -9,6 +9,7 @@ import { InboundReceiptsModule } from './inbound-receipts/inbound-receipts.modul
 import { OrdersModule } from './orders/orders.module.js';
 import { AllocationModule } from './allocation/allocation.module.js';
 import { ExceptionsModule } from './exceptions/exceptions.module.js';
+import { AiModule } from './ai/ai.module.js';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { ExceptionsModule } from './exceptions/exceptions.module.js';
     OrdersModule,
     AllocationModule,
     ExceptionsModule,
+    AiModule,
   ],
   controllers: [AppController],
 })

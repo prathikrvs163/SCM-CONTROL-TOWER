@@ -7,5 +7,6 @@ import { AllocationModule } from '../allocation/allocation.module.js';
   imports: [AllocationModule],
   controllers: [ExceptionsController],
   providers: [ExceptionsService],
+  exports: [ExceptionsService],
 })
 export class ExceptionsModule {}
