@@ -4,6 +4,7 @@ import skuReducer from '../features/skus/skuSlice';
 import warehouseReducer from '../features/warehouses/warehouseSlice';
 import inventoryReducer from '../features/inventory/inventorySlice';
 import orderReducer from '../features/orders/orderSlice';
+import supplyReducer from '../features/supply/supplySlice';
 
 export const store = configureStore({
   reducer: {
@@ -12,6 +13,7 @@ export const store = configureStore({
     warehouses: warehouseReducer,
     inventory: inventoryReducer,
     orders: orderReducer,
+    supply: supplyReducer,
   },
 });
 

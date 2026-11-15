@@ -1145,3 +1145,83 @@ th, td {
   }
 }
 
+
+/* Supply Management */
+.supply-page {
+  padding-bottom: 40px;
+}
+
+.supply-stat-grid {
+  margin-bottom: 24px;
+}
+
+.supply-table {
+  min-width: 1050px;
+}
+
+.receipt-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.receipt-planned {
+  background: #e8efff;
+  color: #3159a5;
+}
+
+.receipt-in_transit {
+  background: #fff2d8;
+  color: #946000;
+}
+
+.receipt-received {
+  background: #e3f5e9;
+  color: #207044;
+}
+
+.receipt-canceled {
+  background: #f0eeee;
+  color: #686868;
+}
+
+.supply-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 190px;
+}
+
+.supply-actions .table-action {
+  padding: 5px 7px;
+  font-size: 0.75rem;
+}
+
+.supply-receive-action {
+  color: #167443;
+  font-weight: 700;
+}
+
+.supply-cancel-action {
+  color: #b33b3b;
+}
+
+.supply-actions .muted-text {
+  font-size: 0.8rem;
+  color: #777;
+}
+
+@media (max-width: 700px) {
+  .supply-table {
+    min-width: 950px;
+  }
+
+  .supply-actions {
+    min-width: 170px;
+  }
+}
