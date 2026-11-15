@@ -3,8 +3,9 @@ import { useState } from 'react';
 import Dashboard from './pages/Dashboard';
 import SkuManagement from './pages/SkuManagement';
 import WarehouseManagement from './pages/WarehouseManagement';
+import InventoryManagement from './pages/InventoryManagement';
 
-type Page = 'dashboard' | 'skus' | 'warehouses';
+type Page = 'dashboard' | 'skus' | 'warehouses' | 'inventory';
 
 function App() {
   const [page, setPage] = useState<Page>('dashboard');
@@ -44,6 +45,15 @@ function App() {
           >
             Warehouses
           </button>
+
+          <button
+            className={
+              page === 'inventory' ? 'nav-link selected' : 'nav-link'
+            }
+            onClick={() => setPage('inventory')}
+          >
+            Inventory
+          </button>
         </div>
       </nav>
 
@@ -53,6 +63,8 @@ function App() {
         {page === 'skus' && <SkuManagement />}
 
         {page === 'warehouses' && <WarehouseManagement />}
+
+        {page === 'inventory' && <InventoryManagement />}
       </main>
     </div>
   );
