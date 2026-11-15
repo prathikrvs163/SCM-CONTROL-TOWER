@@ -6,6 +6,7 @@ import { AllocationModule } from '../allocation/allocation.module.js';
 @Module({
   imports: [AllocationModule],
   controllers: [OrdersController],
-  providers: [OrdersService]
+  providers: [OrdersService],
+  exports: [OrdersService],
 })
 export class OrdersModule {}
