@@ -187,3 +187,48 @@ export interface ExceptionsResponse {
   lowCount: number;
   exceptions: SupplyException[];
 }
+
+export interface OrderTimelineEvent {
+  id: string;
+  orderId: string;
+  fromStatus: OrderStatus | null;
+  toStatus: OrderStatus;
+  changedAt: string;
+}
+
+export interface OrderTimeline {
+  id: string;
+  orderNumber: string;
+  customerName: string;
+  status: OrderStatus;
+  createdAt: string;
+  updatedAt: string;
+  statusHistory: OrderTimelineEvent[];
+}
+
+export interface OrderLineInput {
+  skuId: string;
+  quantity: number;
+  preferredWarehouseId?: string;
+}
+
+export interface CreateOrderInput {
+  orderNumber: string;
+  customerName: string;
+  priority: Priority;
+  requestedShipDate?: string;
+  lines: OrderLineInput[];
+}
+
+export interface UpdateOrderInput {
+  customerName?: string;
+  priority?: Priority;
+  requestedShipDate?: string;
+  lines?: OrderLineInput[];
+}
+
+export type OrderStatusUpdate =
+  | 'CONFIRMED'
+  | 'FULFILLING'
+  | 'SHIPPED'
+  | 'CANCELED';

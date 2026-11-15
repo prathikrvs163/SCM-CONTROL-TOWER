@@ -4,8 +4,9 @@ import Dashboard from './pages/Dashboard';
 import SkuManagement from './pages/SkuManagement';
 import WarehouseManagement from './pages/WarehouseManagement';
 import InventoryManagement from './pages/InventoryManagement';
+import OrdersManagement from './pages/OrdersManagement';
 
-type Page = 'dashboard' | 'skus' | 'warehouses' | 'inventory';
+type Page = 'dashboard' | 'skus' | 'warehouses' | 'inventory' | 'orders';
 
 function App() {
   const [page, setPage] = useState<Page>('dashboard');
@@ -54,6 +55,15 @@ function App() {
           >
             Inventory
           </button>
+
+          <button
+            className={
+              page === 'orders' ? 'nav-link selected' : 'nav-link'
+            }
+            onClick={() => setPage('orders')}
+          >
+            Orders
+          </button>
         </div>
       </nav>
 
@@ -65,6 +75,8 @@ function App() {
         {page === 'warehouses' && <WarehouseManagement />}
 
         {page === 'inventory' && <InventoryManagement />}
+
+        {page === 'orders' && <OrdersManagement />}
       </main>
     </div>
   );
