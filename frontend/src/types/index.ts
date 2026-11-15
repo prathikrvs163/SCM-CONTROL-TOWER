@@ -52,6 +52,17 @@ export interface Inventory {
   warehouse: Warehouse;
 }
 
+export interface InventoryAdjustment {
+  id: string;
+  skuId: string;
+  warehouseId: string;
+  quantityChange: number;
+  reason: string;
+  createdAt: string;
+  sku: Sku;
+  warehouse: Warehouse;
+}
+
 export interface OrderLine {
   id: string;
   orderId: string;
