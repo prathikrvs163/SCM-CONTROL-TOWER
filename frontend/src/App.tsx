@@ -6,8 +6,9 @@ import WarehouseManagement from './pages/WarehouseManagement';
 import InventoryManagement from './pages/InventoryManagement';
 import OrdersManagement from './pages/OrdersManagement';
 import SupplyManagement from './pages/SupplyManagement';
+import ExceptionsManagement from './pages/ExceptionsManagement';
 
-type Page = 'dashboard' | 'skus' | 'warehouses' | 'inventory' | 'orders' | 'supply';
+type Page = 'dashboard' | 'skus' | 'warehouses' | 'inventory' | 'orders' | 'supply' | 'exceptions';
 
 function App() {
   const [page, setPage] = useState<Page>('dashboard');
@@ -74,6 +75,15 @@ function App() {
           >
             Supply
           </button>
+
+          <button
+            className={
+              page === 'exceptions' ? 'nav-link selected' : 'nav-link'
+            }
+            onClick={() => setPage('exceptions')}
+          >
+            Exceptions
+          </button>
         </div>
       </nav>
 
@@ -89,6 +99,8 @@ function App() {
         {page === 'orders' && <OrdersManagement />}
 
         {page === 'supply' && <SupplyManagement />}
+
+        {page === 'exceptions' && <ExceptionsManagement />}
       </main>
     </div>
   );
