@@ -16,8 +16,15 @@ api.interceptors.response.use(
       error.message ||
       'An unexpected API error occurred';
 
-    return Promise.reject(new Error(
-      Array.isArray(message) ? message.join(', ') : message,
+    // Keep the HTTP status and Axios error code so callers can tell
+    // timeouts, network failures and provider errors apart.
+    return Promise.reject(Object.assign(
+      new Error(Array.isArray(message) ? message.join(', ') : message),
+      {
+        status: error.response?.status as number | undefined,
+        code: error.code as string | undefined,
+        errorCode: error.response?.data?.errorCode as string | undefined,
+      },
     ));
   },
 );

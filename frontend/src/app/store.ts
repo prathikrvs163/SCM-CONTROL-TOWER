@@ -6,6 +6,7 @@ import inventoryReducer from '../features/inventory/inventorySlice';
 import orderReducer from '../features/orders/orderSlice';
 import supplyReducer from '../features/supply/supplySlice';
 import exceptionReducer from '../features/exceptions/exceptionSlice';
+import aiReducer from '../features/ai/aiSlice';
 
 export const store = configureStore({
   reducer: {
@@ -16,6 +17,7 @@ export const store = configureStore({
     orders: orderReducer,
     supply: supplyReducer,
     exceptions: exceptionReducer,
+    ai: aiReducer,
   },
 });
 

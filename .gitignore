@@ -1,13 +1,12 @@
-@'
-node_modules/
+﻿node_modules/
 dist/
+dist-seed/
 coverage/
 .env
 .env.*
 !.env.example
 *.tsbuildinfo
-.DS_Store
-backend/src/generated/
-'@ | Set-Content -Encoding Ascii .gitignore
-# Runtime logs
 *.log
+.DS_Store
+
+backend/src/generated/

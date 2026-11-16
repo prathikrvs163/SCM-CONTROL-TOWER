@@ -37,7 +37,10 @@ function ExceptionsManagement() {
     dispatch(fetchExceptions({ severity, type }));
   }, [dispatch, severity, type]);
 
-  const exceptions = data?.exceptions ?? [];
+  const exceptions = useMemo(
+    () => data?.exceptions ?? [],
+    [data?.exceptions],
+  );
 
   const filteredExceptions = useMemo(() => {
     const query = search.trim().toLowerCase();

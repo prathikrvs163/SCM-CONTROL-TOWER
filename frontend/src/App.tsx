@@ -7,8 +7,9 @@ import InventoryManagement from './pages/InventoryManagement';
 import OrdersManagement from './pages/OrdersManagement';
 import SupplyManagement from './pages/SupplyManagement';
 import ExceptionsManagement from './pages/ExceptionsManagement';
+import AIAssistant from './pages/AIAssistant';
 
-type Page = 'dashboard' | 'skus' | 'warehouses' | 'inventory' | 'orders' | 'supply' | 'exceptions';
+type Page = 'dashboard' | 'skus' | 'warehouses' | 'inventory' | 'orders' | 'supply' | 'exceptions' | 'ai';
 
 function App() {
   const [page, setPage] = useState<Page>('dashboard');
@@ -84,6 +85,15 @@ function App() {
           >
             Exceptions
           </button>
+
+          <button
+            className={
+              page === 'ai' ? 'nav-link selected' : 'nav-link'
+            }
+            onClick={() => setPage('ai')}
+          >
+            AI Assistant
+          </button>
         </div>
       </nav>
 
@@ -101,6 +111,8 @@ function App() {
         {page === 'supply' && <SupplyManagement />}
 
         {page === 'exceptions' && <ExceptionsManagement />}
+
+        {page === 'ai' && <AIAssistant />}
       </main>
     </div>
   );
