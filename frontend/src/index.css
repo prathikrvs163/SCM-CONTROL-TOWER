@@ -1317,3 +1317,87 @@ th, td {
     grid-template-columns: 1fr;
   }
 }
+
+/* Planner actions */
+.planner-panel {
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid #c7d2fe;
+  border-radius: 12px;
+  background: #f8faff;
+}
+
+.planner-form .full-width {
+  grid-column: 1 / -1;
+}
+
+.planner-split-lines {
+  display: grid;
+  gap: 10px;
+}
+
+.order-override-label {
+  display: inline-block;
+  margin-left: 6px;
+  color: #4338ca;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Audit log */
+.audit-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.audit-table td {
+  vertical-align: top;
+}
+
+.audit-changes {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.audit-field {
+  margin-right: 6px;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.audit-before {
+  color: #94a3b8;
+  text-decoration: line-through;
+}
+
+.audit-after {
+  color: #0f172a;
+}
+
+.audit-long-value {
+  max-height: 240px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  font-family: inherit;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.order-activity .order-activity-reason {
+  color: #334155;
+  font-style: italic;
+}
+
+.order-activity .audit-changes {
+  margin-top: 4px;
+}

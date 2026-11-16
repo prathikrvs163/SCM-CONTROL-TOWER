@@ -7,6 +7,8 @@ import orderReducer from '../features/orders/orderSlice';
 import supplyReducer from '../features/supply/supplySlice';
 import exceptionReducer from '../features/exceptions/exceptionSlice';
 import aiReducer from '../features/ai/aiSlice';
+import auditReducer from '../features/audit/auditSlice';
+import plannerReducer from '../features/planner/plannerSlice';
 
 export const store = configureStore({
   reducer: {
@@ -18,6 +20,8 @@ export const store = configureStore({
     supply: supplyReducer,
     exceptions: exceptionReducer,
     ai: aiReducer,
+    audit: auditReducer,
+    planner: plannerReducer,
   },
 });
 

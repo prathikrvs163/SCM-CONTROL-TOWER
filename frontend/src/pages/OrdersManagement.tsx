@@ -14,6 +14,11 @@ import {
   updateOrder,
   updateOrderStatus,
 } from '../features/orders/orderSlice';
+import { fetchOrderActivity } from '../features/audit/auditSlice';
+import AuditChanges from '../features/audit/AuditChanges';
+import { formatAuditAction } from '../features/audit/auditFormat';
+import OrderPlannerPanel from '../features/planner/OrderPlannerPanel';
+import type { OrderPlannerAction } from '../features/planner/OrderPlannerPanel';
 
 import type {
   CreateOrderInput,
@@ -50,6 +55,12 @@ const emptyForm: OrderForm = {
   requestedShipDate: '',
   lines: [{ ...emptyLine }],
 };
+
+/** Orders the allocation engine plans for; promise and split actions apply. */
+const PLANNED_STATUSES: OrderStatus[] = ['CONFIRMED', 'FULFILLING'];
+
+/** Orders whose lines may still change fulfillment location. */
+const REASSIGNABLE_STATUSES: OrderStatus[] = ['DRAFT', ...PLANNED_STATUSES];
 
 const statusTransitions: Record<OrderStatus, OrderStatus[]> = {
   DRAFT: ['CONFIRMED', 'CANCELED'],
@@ -110,6 +121,14 @@ function OrdersManagement() {
   const [successMessage, setSuccessMessage] = useState('');
 
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [plannerAction, setPlannerAction] =
+    useState<OrderPlannerAction | null>(null);
+
+  const {
+    orderActivity,
+    orderActivityId,
+    orderActivityLoading,
+  } = useAppSelector((state) => state.audit);
 
   useEffect(() => {
     dispatch(fetchOrders());
@@ -295,12 +314,27 @@ function OrdersManagement() {
 
   async function openOrderDetails(order: Order) {
     setSelectedOrder(order);
+    setPlannerAction(null);
     dispatch(clearOrderTimeline());
     dispatch(clearOrderError());
 
     await Promise.all([
       dispatch(fetchOrderTimeline(order.id)),
       dispatch(fetchAllocationPlan()),
+      dispatch(fetchOrderActivity(order.id)),
+    ]);
+  }
+
+  async function handlePlannerCompleted(message: string, updated: Order) {
+    setPlannerAction(null);
+    setSelectedOrder(updated);
+    setSuccessMessage(message);
+
+    await Promise.all([
+      dispatch(fetchOrders()),
+      dispatch(fetchAllocationPlan()),
+      dispatch(fetchOrderTimeline(updated.id)),
+      dispatch(fetchOrderActivity(updated.id)),
     ]);
   }
 
@@ -339,6 +373,7 @@ function OrdersManagement() {
         dispatch(fetchOrders()),
         dispatch(fetchOrderTimeline(order.id)),
         dispatch(fetchAllocationPlan()),
+        dispatch(fetchOrderActivity(order.id)),
       ]);
     } catch {
       // The Redux slice retains the backend error message.
@@ -697,7 +732,10 @@ function OrdersManagement() {
             </div>
             <button
               className="secondary-button"
-              onClick={() => setSelectedOrder(null)}
+              onClick={() => {
+                setSelectedOrder(null);
+                setPlannerAction(null);
+              }}
             >
               Close details
             </button>
@@ -726,6 +764,18 @@ function OrdersManagement() {
             </div>
           </div>
 
+          {selectedOrder.splitFromOrderId && (
+            <p className="muted-text">
+              Split from{' '}
+              <strong>
+                {items.find(
+                  (order) => order.id === selectedOrder.splitFromOrderId,
+                )?.orderNumber ?? 'another order'}
+              </strong>
+              .
+            </p>
+          )}
+
           <div className="order-status-actions">
             <strong>Available actions</strong>
             {statusTransitions[selectedOrder.status].length === 0 ? (
@@ -750,7 +800,36 @@ function OrdersManagement() {
                 </button>
               ))
             )}
+
+            {PLANNED_STATUSES.includes(selectedOrder.status) &&
+              selectedOrder.lines.reduce(
+                (sum, line) => sum + line.quantity,
+                0,
+              ) > 1 && (
+                <button
+                  className="secondary-button"
+                  onClick={() => setPlannerAction({ kind: 'split' })}
+                >
+                  Split shipment
+                </button>
+              )}
           </div>
+
+          {plannerAction && (
+            <OrderPlannerPanel
+              key={
+                plannerAction.kind === 'split'
+                  ? 'split'
+                  : `${plannerAction.kind}-${plannerAction.orderLineId}`
+              }
+              order={selectedOrder}
+              planOrder={selectedAllocation}
+              warehouses={warehouses}
+              action={plannerAction}
+              onClose={() => setPlannerAction(null)}
+              onCompleted={handlePlannerCompleted}
+            />
+          )}
 
           <h3>Order lines and fulfillment plan</h3>
           <div className="table-responsive">
@@ -763,6 +842,7 @@ function OrdersManagement() {
                   <th>Backordered</th>
                   <th>Promised ship</th>
                   <th>Promise reason</th>
+                  <th>Planner actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -776,6 +856,10 @@ function OrdersManagement() {
                       <td>
                         <strong>{line.sku.skuCode}</strong>
                         <span className="table-subtext">{line.sku.name}</span>
+                        <span className="table-subtext">
+                          Ships from:{' '}
+                          {line.preferredWarehouse?.code ?? 'any warehouse'}
+                        </span>
                       </td>
                       <td>{line.quantity}</td>
                       <td>{planLine?.allocatedQuantity ?? '—'}</td>
@@ -785,8 +869,54 @@ function OrdersManagement() {
                         {planLine?.isLate && (
                           <span className="order-late-label">Late</span>
                         )}
+                        {planLine?.promiseOverridden && (
+                          <>
+                            <span className="order-override-label">
+                              Override
+                            </span>
+                            <span className="table-subtext">
+                              Computed:{' '}
+                              {formatDate(planLine.computedPromisedShipDate)}
+                            </span>
+                          </>
+                        )}
                       </td>
                       <td>{planLine?.promiseReason ?? 'Plan unavailable'}</td>
+                      <td>
+                        <div className="order-row-actions">
+                          {REASSIGNABLE_STATUSES.includes(
+                            selectedOrder.status,
+                          ) && (
+                            <button
+                              className="table-action"
+                              onClick={() =>
+                                setPlannerAction({
+                                  kind: 'reassign',
+                                  orderLineId: line.id,
+                                })
+                              }
+                            >
+                              Reassign
+                            </button>
+                          )}
+                          {PLANNED_STATUSES.includes(selectedOrder.status) && (
+                            <button
+                              className="table-action"
+                              onClick={() =>
+                                setPlannerAction({
+                                  kind: 'override',
+                                  orderLineId: line.id,
+                                })
+                              }
+                            >
+                              Override promise
+                            </button>
+                          )}
+                          {!REASSIGNABLE_STATUSES.includes(
+                            selectedOrder.status,
+                          ) && <span className="muted-text">—</span>}
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -845,6 +975,37 @@ function OrdersManagement() {
               </ol>
             ) : (
               <p className="muted-text">No timeline events found.</p>
+            )}
+          </div>
+
+          <div className="order-timeline">
+            <h3>Activity and audit trail</h3>
+            {orderActivityLoading && orderActivityId === selectedOrder.id ? (
+              <p className="muted-text">Loading activity...</p>
+            ) : orderActivityId === selectedOrder.id &&
+              orderActivity.length > 0 ? (
+              <ol className="order-activity">
+                {orderActivity.map((entry) => (
+                  <li key={entry.id}>
+                    <strong>{formatAuditAction(entry.action)}</strong>
+                    <span>
+                      {new Date(entry.createdAt).toLocaleString()} ·{' '}
+                      {entry.actor}
+                    </span>
+                    {entry.reason && (
+                      <span className="order-activity-reason">
+                        Reason: {entry.reason}
+                      </span>
+                    )}
+                    <AuditChanges entry={entry} />
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="muted-text">
+                No audited activity yet. Changes made from now on are recorded
+                here.
+              </p>
             )}
           </div>
         </section>

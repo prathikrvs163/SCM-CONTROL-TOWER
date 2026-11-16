@@ -12,6 +12,7 @@ import { GoogleGenAI } from '@google/genai';
 import { ExceptionsService } from '../exceptions/exceptions.service.js';
 import { OrdersService } from '../orders/orders.service.js';
 import { AllocationService } from '../allocation/allocation.service.js';
+import { AuditEntityType, AuditService } from '../audit/audit.service.js';
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -215,14 +216,81 @@ export class AiService {
     private readonly exceptionsService: ExceptionsService,
     private readonly ordersService: OrdersService,
     private readonly allocationService: AllocationService,
+    private readonly audit: AuditService,
   ) {}
+
+  private get modelName(): string {
+    return (
+      this.configService.get<string>('GEMINI_MODEL') ?? 'gemini-3.8-flash'
+    );
+  }
+
+  /**
+   * Run a generation and record the outcome in the audit log. The prompt
+   * itself is not stored (it embeds full order and exception data); its
+   * size and the inputs it was built from are.
+   */
+  private async generateAudited(
+    prompt: string,
+    audit: {
+      entityId: string;
+      entityRef: string | null;
+      action: string;
+      inputs: Record<string, unknown>;
+    },
+    postProcess: (text: string) => string = (text) => text,
+  ): Promise<string> {
+    const startedAt = Date.now();
+
+    try {
+      const output = postProcess(await this.generateText(prompt));
+
+      await this.audit.recordSafely({
+        entityType: AuditEntityType.AI_INTERACTION,
+        entityId: audit.entityId,
+        entityRef: audit.entityRef,
+        action: audit.action,
+        before: { ...audit.inputs, promptCharacters: prompt.length },
+        after: {
+          model: this.modelName,
+          outcome: 'SUCCESS',
+          durationMs: Date.now() - startedAt,
+          output,
+        },
+      });
+
+      return output;
+    } catch (error) {
+      const response =
+        error instanceof HttpException ? error.getResponse() : undefined;
+
+      await this.audit.recordSafely({
+        entityType: AuditEntityType.AI_INTERACTION,
+        entityId: audit.entityId,
+        entityRef: audit.entityRef,
+        action: audit.action,
+        before: { ...audit.inputs, promptCharacters: prompt.length },
+        after: {
+          model: this.modelName,
+          outcome: 'FAILED',
+          durationMs: Date.now() - startedAt,
+          httpStatus:
+            error instanceof HttpException ? error.getStatus() : null,
+          errorCode:
+            response && typeof response === 'object' && 'errorCode' in response
+              ? response.errorCode
+              : null,
+        },
+      });
+
+      throw error;
+    }
+  }
 
   private async generateText(prompt: string): Promise<string> {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY');
 
-    const model =
-      this.configService.get<string>('GEMINI_MODEL') ??
-      'gemini-3.8-flash';
+    const model = this.modelName;
 
     if (!apiKey) {
       this.logger.error('GEMINI_API_KEY is not configured.');
@@ -419,7 +487,12 @@ Requirements:
       'Exception summary: exceptions fetched. Preparing prompt...',
     );
 
-    const summary = await this.generateText(prompt);
+    const summary = await this.generateAudited(prompt, {
+      entityId: 'exception-summary',
+      entityRef: null,
+      action: 'AI_EXCEPTION_SUMMARY',
+      inputs: { exceptionCount: result.totalExceptions },
+    });
 
     return {
       generatedAt: new Date(),
@@ -480,7 +553,19 @@ Subject: <subject line>
 Return only the customer communication draft.
 `;
 
-    const draft = toPlainText(await this.generateText(prompt));
+    const draft = await this.generateAudited(
+      prompt,
+      {
+        entityId: order.id,
+        entityRef: order.orderNumber,
+        action: 'AI_CUSTOMER_DRAFT',
+        inputs: {
+          orderStatus: order.status,
+          exceptionCount: orderExceptions.length,
+        },
+      },
+      toPlainText,
+    );
 
     return {
       orderId: order.id,

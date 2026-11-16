@@ -9,12 +9,14 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
 import { UpdateOrderDto } from './dto/update-order.dto.js';
 import { AllocationService } from '../allocation/allocation.service.js';
+import { AuditEntityType, AuditService } from '../audit/audit.service.js';
 
 @Injectable()
 export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly allocationService: AllocationService,
+    private readonly audit: AuditService,
   ) {}
 
   private readonly orderInclude = {
@@ -106,6 +108,24 @@ export class OrdersService {
           },
         });
 
+        await this.audit.record(tx, {
+          entityType: AuditEntityType.ORDER,
+          entityId: order.id,
+          entityRef: order.orderNumber,
+          action: 'ORDER_CREATED',
+          after: {
+            customerName: order.customerName,
+            priority: order.priority,
+            requestedShipDate: order.requestedShipDate,
+            status: order.status,
+            lines: order.lines.map((line) => ({
+              skuCode: line.sku.skuCode,
+              quantity: line.quantity,
+              preferredWarehouseCode: line.preferredWarehouse?.code ?? null,
+            })),
+          },
+        });
+
         return order;
       });
     } catch (error) {
@@ -172,6 +192,7 @@ export class OrdersService {
   async update(id: string, dto: UpdateOrderDto) {
     const order = await this.prisma.order.findUnique({
       where: { id },
+      include: { lines: true },
     });
 
     if (!order) {
@@ -224,6 +245,44 @@ export class OrdersService {
           })),
         });
       }
+
+      await this.audit.record(tx, {
+        entityType: AuditEntityType.ORDER,
+        entityId: id,
+        entityRef: order.orderNumber,
+        action: 'ORDER_UPDATED',
+        before: {
+          customerName: order.customerName,
+          priority: order.priority,
+          requestedShipDate: order.requestedShipDate,
+          ...(dto.lines
+            ? {
+                lines: order.lines.map((line) => ({
+                  skuId: line.skuId,
+                  quantity: line.quantity,
+                  preferredWarehouseId: line.preferredWarehouseId,
+                })),
+              }
+            : {}),
+        },
+        after: {
+          customerName: dto.customerName?.trim() ?? order.customerName,
+          priority: dto.priority ?? order.priority,
+          requestedShipDate:
+            dto.requestedShipDate === undefined
+              ? order.requestedShipDate
+              : new Date(dto.requestedShipDate),
+          ...(dto.lines
+            ? {
+                lines: dto.lines.map((line) => ({
+                  skuId: line.skuId,
+                  quantity: line.quantity,
+                  preferredWarehouseId: line.preferredWarehouseId ?? null,
+                })),
+              }
+            : {}),
+        },
+      });
 
       return tx.order.findUnique({
         where: { id },
@@ -347,6 +406,18 @@ export class OrdersService {
           },
         });
 
+        await this.audit.record(tx, {
+          entityType: AuditEntityType.ORDER,
+          entityId: id,
+          entityRef: order.orderNumber,
+          action: 'ORDER_SHIPPED',
+          before: { status: 'FULFILLING' },
+          after: {
+            status: 'SHIPPED',
+            onHandDeducted: [...deductions.values()],
+          },
+        });
+
         // Deduct stock atomically and create audit records.
         for (const deduction of deductions.values()) {
           const inventoryResult = await tx.inventory.updateMany({
@@ -409,6 +480,15 @@ export class OrdersService {
           fromStatus: order.status,
           toStatus: status,
         },
+      });
+
+      await this.audit.record(tx, {
+        entityType: AuditEntityType.ORDER,
+        entityId: id,
+        entityRef: order.orderNumber,
+        action: 'ORDER_STATUS_CHANGED',
+        before: { status: order.status },
+        after: { status },
       });
 
       return tx.order.findUnique({
