@@ -262,12 +262,22 @@ http://localhost:5173
 
 ### Backend
 
-Run backend tests:
+Run backend unit tests (mocked database, no MySQL needed):
 
 ```powershell
 cd backend
 npm test
 ```
+
+They cover the allocation rules (tie-breakers, warehouse and source order, safety stock, promise dates, lateness, overrides), ATP, planner actions, the audit service and the AI error handling.
+
+Run the API tests against a real MySQL database:
+
+```powershell
+npm run test:e2e
+```
+
+The API tests start the full Nest app and call it over HTTP. They never use your development database: they connect to `DATABASE_URL_TEST` if set, otherwise to the `DATABASE_URL` database name with `_test` appended (for example `scm_control_tower_test`), and refuse to run against any database whose name does not end in `_test`. Each run applies the committed migrations to that database (creating it if needed), and each test empties its tables first. The Gemini key is blanked, so no AI request is ever sent. Covered: receipt receiving (including idempotency and concurrent receives), draft edits and the order state machine, shipping (including concurrent ships), all four planner actions, and the exceptions lifecycle as supply changes. Expect about a minute on Docker for Windows, where each committed write is slow.
 
 Run backend lint:
 
@@ -330,6 +340,7 @@ The seed process skips records that already exist, making it suitable for repeat
 | Variable | Application | Purpose |
 |---|---|---|
 | `DATABASE_URL` | Backend | MySQL connection string |
+| `DATABASE_URL_TEST` | Backend (optional) | Database for `npm run test:e2e`; defaults to the `DATABASE_URL` database name plus `_test`, and must end in `_test` |
 | `PORT` | Backend | API server port; defaults to 3000 |
 | `GEMINI_API_KEY` | Backend | Google Gemini API authentication |
 | `GEMINI_MODEL` | Backend | Gemini model selection |
@@ -571,9 +582,9 @@ Compared with the full brief, these items are not implemented yet, roughly in pr
 4. **Search, filters and sorting.** Date range and exception-type filters on orders, and sorting by promised date, risk and order age.
 5. **AI review and confirm flow.** Edit a customer draft and save it as a "sent message" record (with the planner's accept or discard decision in the audit log), and per-order exception summaries ("What happened", "Current plan", "Next best actions").
 6. **API versioning and authentication.** A `/api/v1` global prefix and a basic auth guard; the audit `actor` would then come from the signed-in user instead of the fixed `planner`.
-7. **Tests.** Unit tests for the remaining allocation and ATP rules (promise overrides are covered), and API tests against a real database for receipt receiving, order edits, planner actions and the exception lifecycle.
-8. **Audit log housekeeping.** Paging past the 500-entry limit, date-range filters, and a retention policy.
-9. **Bulk operations.** Bulk creation of receipts and orders.
+7. **Audit log housekeeping.** Paging past the 500-entry limit, date-range filters, and a retention policy.
+8. **Bulk operations.** Bulk creation of receipts and orders.
+9. **CI.** Run the unit tests, the API tests (against a MySQL service container) and both builds on every push.
 
 Longer term: optional SKU lead time and location timezone, AI shortage insights, real-time updates, deployment and CI/CD, and centralized monitoring.
 
