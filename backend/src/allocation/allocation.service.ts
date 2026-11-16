@@ -13,6 +13,7 @@ interface SupplyPool {
   skuId: string;
   warehouseId: string;
   onHandRemaining: number;
+  safetyStockDeficit: number;
   receipts: SupplyReceipt[];
 }
 
@@ -86,6 +87,7 @@ export class AllocationService {
           skuId,
           warehouseId,
           onHandRemaining: 0,
+          safetyStockDeficit: 0,
           receipts: [],
         };
 
@@ -95,11 +97,23 @@ export class AllocationService {
       return pool;
     };
 
+    // Protect safety stock from customer order allocation.
     for (const inventory of inventories) {
-      getPool(
+      const pool = getPool(
         inventory.skuId,
         inventory.warehouseId,
-      ).onHandRemaining = inventory.onHandQuantity;
+      );
+
+      pool.onHandRemaining = Math.max(
+        0,
+        inventory.onHandQuantity - inventory.safetyStock,
+      );
+
+      // Incoming stock must replenish this deficit first.
+      pool.safetyStockDeficit = Math.max(
+        0,
+        inventory.safetyStock - inventory.onHandQuantity,
+      );
     }
 
     for (const receipt of receipts) {
@@ -166,7 +180,7 @@ export class AllocationService {
 
           const pool = getPool(line.skuId, warehouse.id);
 
-          // Consume available on-hand inventory first.
+          // Consume available on-hand inventory above safety stock.
           const onHandAllocated = Math.min(
             remainingDemand,
             pool.onHandRemaining,
@@ -188,9 +202,23 @@ export class AllocationService {
             });
           }
 
-          // Then consume future inbound receipts in ETA order.
+          // Consume future inbound receipts in ETA order.
           for (const receipt of pool.receipts) {
             if (remainingDemand <= 0) break;
+            if (receipt.remainingQuantity <= 0) continue;
+
+            // Replenish the safety-stock deficit before promising
+            // any incoming quantity to customer orders.
+            if (pool.safetyStockDeficit > 0) {
+              const replenishmentQuantity = Math.min(
+                pool.safetyStockDeficit,
+                receipt.remainingQuantity,
+              );
+
+              receipt.remainingQuantity -= replenishmentQuantity;
+              pool.safetyStockDeficit -= replenishmentQuantity;
+            }
+
             if (receipt.remainingQuantity <= 0) continue;
 
             const receiptAllocated = Math.min(
@@ -322,6 +350,7 @@ export class AllocationService {
         warehouseId: string;
         warehouseCode: string;
         onHandQuantity: number;
+        safetyStock: number;
         allocatedOnHand: number;
         receipts: {
           receiptId: string;
@@ -348,6 +377,7 @@ export class AllocationService {
           warehouseId: warehouse.id,
           warehouseCode: warehouse.code,
           onHandQuantity: 0,
+          safetyStock: 0,
           allocatedOnHand: 0,
           receipts: [],
         };
@@ -358,12 +388,14 @@ export class AllocationService {
       return pool;
     };
 
-    // Load on-hand inventory from active warehouses.
+    // Load on-hand inventory and safety stock from active warehouses.
     for (const inventory of inventories) {
       if (!inventory.warehouse.isActive) continue;
 
       const pool = getPool(inventory.sku, inventory.warehouse);
+
       pool.onHandQuantity = inventory.onHandQuantity;
+      pool.safetyStock = inventory.safetyStock;
     }
 
     // Load only planned and in-transit receipts.
@@ -412,12 +444,18 @@ export class AllocationService {
           a.warehouseCode.localeCompare(b.warehouseCode),
       )
       .map((pool) => {
+        // Available now excludes both active allocations and safety stock.
         const availableNow = Math.max(
           0,
-          pool.onHandQuantity - pool.allocatedOnHand,
+          pool.onHandQuantity -
+            pool.allocatedOnHand -
+            pool.safetyStock,
         );
 
-        let projectedQuantity = availableNow;
+        // Keep the unallocated supply balance before subtracting
+        // safety stock, so future receipts can replenish its deficit.
+        let projectedSupply =
+          pool.onHandQuantity - pool.allocatedOnHand;
 
         const futureReceipts = pool.receipts
           .map((receipt) => ({
@@ -439,12 +477,15 @@ export class AllocationService {
           );
 
         const projectedAtp = futureReceipts.map((receipt) => {
-          projectedQuantity += receipt.remainingQuantity;
+          projectedSupply += receipt.remainingQuantity;
 
           return {
             asOf: receipt.expectedArrivalTime,
             receiptId: receipt.receiptId,
-            projectedAvailableQuantity: projectedQuantity,
+            projectedAvailableQuantity: Math.max(
+              0,
+              projectedSupply - pool.safetyStock,
+            ),
           };
         });
 
@@ -456,6 +497,7 @@ export class AllocationService {
           warehouseCode: pool.warehouseCode,
           onHandQuantity: pool.onHandQuantity,
           allocatedOnHandQuantity: pool.allocatedOnHand,
+          safetyStock: pool.safetyStock,
           availableNow,
           futureReceipts,
           projectedAtp,
@@ -464,7 +506,7 @@ export class AllocationService {
 
     return {
       generatedAt: new Date(),
-      calculationMethod: 'NET_OF_ACTIVE_ORDER_ALLOCATIONS',
+      calculationMethod: 'NET_OF_ACTIVE_ORDER_ALLOCATIONS_AND_SAFETY_STOCK',
       locationCount: new Set(
         atp.map((item) => item.warehouseId),
       ).size,
