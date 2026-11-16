@@ -42,6 +42,18 @@ The application also includes AI-powered features to summarize operational excep
 - View exception severity and affected quantities.
 - Monitor operational exceptions through a centralized queue.
 
+### Planner Actions
+- Expedite an inbound receipt to an earlier arrival.
+- Reassign an order line's fulfillment warehouse.
+- Override (or clear) a line's promised ship date.
+- Split a shipment by moving quantities to a new order.
+- Every action requires a reason and is recorded in the audit log.
+
+### Audit Log
+- Append-only record of receipt changes, order changes, planner actions and AI generations.
+- Before and after values, reason, actor and time for every entry.
+- Audit Log page with filters, plus an activity trail on each order.
+
 ### AI Assistant
 - Generate AI-powered exception summaries.
 - Generate customer communication drafts for selected orders.
@@ -103,10 +115,12 @@ SCM-CONTROL-TOWER/
 |   +-- src/
 |       +-- ai/
 |       +-- allocation/
+|       +-- audit/
 |       +-- exceptions/
 |       +-- inbound-receipts/
 |       +-- inventory/
 |       +-- orders/
+|       +-- planner-actions/
 |       +-- prisma/
 |       +-- skus/
 |       +-- warehouses/
@@ -348,6 +362,11 @@ All routes are served from `http://localhost:3000`. They are currently **unversi
 | `GET` | `/exceptions?severity=&type=` | Exceptions queue |
 | `POST` | `/ai/exception-summary` | AI summary of current exceptions |
 | `POST` | `/ai/customer-communication/:orderId` | AI customer update draft for one order |
+| `POST` | `/planner-actions/receipts/:id/expedite` | Move a receipt's expected arrival earlier (`expectedArrivalTime`, `reason`) |
+| `POST` | `/planner-actions/order-lines/:id/reassign` | Change a line's fulfillment warehouse (`warehouseId`, `reason`) |
+| `POST` | `/planner-actions/order-lines/:id/promise-override` | Set (`promisedShipDate`) or clear (`null`) a promise override, with `reason` |
+| `POST` | `/planner-actions/orders/:id/split` | Move line quantities to a new order (`lines: [{orderLineId, quantity}]`, `reason`) |
+| `GET` | `/audit-logs?entityType=&entityId=&action=&limit=` | Audit entries, newest first (default 100, max 500) |
 
 ## Database Schema and Migrations
 
@@ -360,11 +379,12 @@ MySQL 8.4, accessed through Prisma 7 (`backend/prisma/schema.prisma`).
 | `Inventory` | On-hand balance and safety stock per SKU and warehouse | Composite primary key `(skuId, warehouseId)` |
 | `InventoryAdjustment` | Append-only stock movement log with a `reason` | Written for manual adjustments, receipts and shipments |
 | `InboundReceipt` | Purchase order / transfer arrivals with `status`, `expectedArrivalTime`, `receivedAt` | `receiptId` unique |
-| `Order` | Customer order header (`orderNumber`, `customerName`, `priority`, `requestedShipDate`, `status`) | `orderNumber` unique |
-| `OrderLine` | SKU, quantity and optional preferred warehouse | Cascades on order delete |
+| `Order` | Customer order header (`orderNumber`, `customerName`, `priority`, `requestedShipDate`, `status`, `splitFromOrderId`) | `orderNumber` unique; `splitFromOrderId` links a split order to its original |
+| `OrderLine` | SKU, quantity, optional preferred warehouse, optional `promisedShipDateOverride` and `promiseOverrideReason` | Cascades on order delete |
 | `OrderStatusHistory` | Every order status transition (`fromStatus`, `toStatus`, `changedAt`) | Indexed by `(orderId, changedAt)` |
+| `AuditLog` | Append-only change record (`entityType`, `entityId`, `entityRef`, `action`, `reason`, `actor`, `before`, `after` JSON, `createdAt`) | Indexed by `(entityType, entityId, createdAt)` and `createdAt` |
 
-Enums: `ReceiptStatus` (`PLANNED`, `IN_TRANSIT`, `RECEIVED`, `CANCELED`), `OrderPriority` (`LOW`, `MED`, `HIGH`), `OrderStatus` (`DRAFT`, `CONFIRMED`, `FULFILLING`, `SHIPPED`, `CANCELED`).
+Enums: `ReceiptStatus` (`PLANNED`, `IN_TRANSIT`, `RECEIVED`, `CANCELED`), `OrderPriority` (`LOW`, `MED`, `HIGH`), `OrderStatus` (`DRAFT`, `CONFIRMED`, `FULFILLING`, `SHIPPED`, `CANCELED`), `AuditEntityType` (`INBOUND_RECEIPT`, `ORDER`, `AI_INTERACTION`).
 
 **Allocations are not stored.** They are derived on every request from persisted orders, inventory and receipts (see the next section), so there is no allocation table to drift out of sync. `Inventory.reservedQuantity` exists in the schema but is not used by the current engine.
 
@@ -378,6 +398,7 @@ Enums: `ReceiptStatus` (`PLANNED`, `IN_TRANSIT`, `RECEIVED`, `CANCELED`), `Order
 | `20261114105528_add_customer_orders` | Orders and order lines |
 | `20261114110107_align_order_priority` | Priority enum aligned to `LOW` / `MED` / `HIGH` |
 | `20261114190516_add_order_status_history` | Order status history |
+| `20261117090000_add_audit_log_and_planner_actions` | Audit log table, promise override columns, split-order link |
 
 ## Allocation, ATP and Promise Rules
 
@@ -412,8 +433,9 @@ Within an order, lines are allocated in line creation order.
 | Fully covered by on-hand | Planning date | "Fulfilled from available on-hand inventory." |
 | Fully covered, needs inbound | Latest expected arrival of the receipts used (or the planning date, if later) | "Fulfillment depends on inbound inventory." |
 | Any quantity backordered | `null` (no date is promised) | "Insufficient on-hand and inbound supply to cover the full quantity." |
+| Planner override set | The override date | "Planner override: &lt;reason&gt;", plus a note if supply still does not cover the full quantity |
 
-A line is `isLate` when its promised date is after the order's requested ship date.
+A line is `isLate` when its promised date (the override, if set) is after the order's requested ship date. Each plan line also returns `computedPromisedShipDate` (what the engine would promise without an override) and `promiseOverridden`. An override changes only the promise; allocation, backorders and the `BACKORDER` exception are unaffected.
 
 ### ATP
 
@@ -437,6 +459,8 @@ A line is `isLate` when its promised date is after the order's requested ship da
 | Rapid edits / re-running allocation | Allocation has no writes, so running it any number of times cannot double-apply anything. |
 | Shipping an order | `FULFILLING` to `SHIPPED` requires every line to be fully covered by on-hand. In one transaction the order is claimed (`status = FULFILLING`), stock is deducted (`onHandQuantity >= quantity` guard), and an adjustment record is written. A concurrent second ship gets `409`. |
 | Concurrent status changes | All status updates are conditional on the status that was read, so a stale request gets `409` instead of overwriting. |
+| Planner action races a ship, cancel or another action | Each action re-checks the order status (or receipt ETA) and the line value it read inside its transaction. If anything changed, it returns `409` and writes nothing, including no audit entry. |
+| Splitting an order | Moved units go to a new order `<orderNumber>-S<n>` with the same customer, priority, status and `createdAt`, so it keeps its place in the allocation queue. At least one unit must stay on the original. |
 
 ### Order state machine
 
@@ -448,7 +472,32 @@ A line is `isLate` when its promised date is after the order's requested ship da
 | `SHIPPED` | none |
 | `CANCELED` | none |
 
-Every transition is recorded in `OrderStatusHistory`. Order header and line edits are only allowed while the order is `DRAFT`.
+Every transition is recorded in `OrderStatusHistory`. Order header and line edits are only allowed while the order is `DRAFT`; after confirmation, planners change orders through the planner actions below.
+
+## Planner Actions
+
+Planner actions (`backend/src/planner-actions/`) change the inputs of the allocation plan. Each one requires a `reason` (3 to 500 characters), runs in one transaction with a conditional update guarding against concurrent changes, and writes an audit entry in the same transaction.
+
+| Action | Allowed when | Effect on the plan | UI |
+|---|---|---|---|
+| Expedite receipt | Receipt is `PLANNED` or `IN_TRANSIT`; new arrival is earlier than the current one and not in the past | Lines using the receipt get an earlier promise | Supply page, **Expedite** |
+| Reassign fulfillment location | Order is `DRAFT`, `CONFIRMED` or `FULFILLING`; target warehouse is active and different | The line draws from the new warehouse first, falling back to others if needed | Order details, **Reassign** |
+| Override promise date | Order is `CONFIRMED` or `FULFILLING`; date is today (UTC) or later | `promisedShipDate` becomes the override; the computed date stays visible | Order details, **Override promise** / **Clear override** |
+| Split shipment | Order is `CONFIRMED` or `FULFILLING`; at least one unit stays | Moved quantities become a separate order, so the rest can ship once covered | Order details, **Split shipment** |
+
+Line overrides are not copied to a split order; its lines get a freshly computed promise.
+
+## Audit Log
+
+`AuditService.record()` takes the transaction client, so an audit entry commits or rolls back with the change it describes. Entries are never updated or deleted by the app.
+
+| Entity | Actions recorded |
+|---|---|
+| `INBOUND_RECEIPT` | `RECEIPT_CREATED`, `RECEIPT_UPDATED`, `RECEIPT_DISPATCHED`, `RECEIPT_CANCELED`, `RECEIPT_RECEIVED`, `RECEIPT_EXPEDITED` |
+| `ORDER` | `ORDER_CREATED`, `ORDER_UPDATED`, `ORDER_STATUS_CHANGED`, `ORDER_SHIPPED`, `LINE_FULFILLMENT_REASSIGNED`, `PROMISE_DATE_OVERRIDDEN`, `PROMISE_OVERRIDE_CLEARED`, `ORDER_SPLIT`, `ORDER_CREATED_FROM_SPLIT` |
+| `AI_INTERACTION` | `AI_EXCEPTION_SUMMARY`, `AI_CUSTOMER_DRAFT` (success or failure) |
+
+Line-level planner actions are recorded against the order, with the line ID in the `before`/`after` snapshots, so the order's activity trail shows them. The **Audit Log** page lists entries newest first with entity and "planner actions only" filters, and each order's details panel shows its own activity. `actor` is `planner` for every entry until the API has authentication.
 
 ## Exceptions Rules
 
@@ -501,30 +550,30 @@ Any Markdown the model still returns (bold markers, backslash escapes) is stripp
 
 ### Audit approach
 
-Currently each AI call is logged on the server (model, attempt number, duration, status, redacted error). AI requests and responses are **not yet persisted** to the database; a dedicated AI interaction log is the first item under [Known Gaps](#known-gaps-and-next-steps).
+Each generation, successful or failed, is written to the audit log as an `AI_INTERACTION` entry with the model, outcome, duration, prompt size, the inputs it was built from (exception count, order status), and either the output text or the HTTP status and `errorCode`. The full prompt is not stored, because it embeds complete order and exception data. Audit writes for AI are best-effort: a failed write is logged as a warning and never hides the AI result. Server logs additionally record each attempt (attempt number, duration, status, redacted error).
 
 ## Tradeoffs
 
 - **Derived allocations instead of stored ones.** Recomputing the plan on every request makes it reproducible and immune to double-applying, and receipt or order changes take effect immediately. The cost is that every plan, ATP and exceptions request reads all active orders, inventory and receipts. That is fine at demo scale but would need caching or incremental recomputation for large volumes.
 - **Greedy, priority-first allocation.** Lines are filled in a fixed order, one warehouse at a time (on-hand, then that warehouse's inbound, then the next warehouse). This is easy to explain and deterministic, but it does not optimize globally. For example, a preferred warehouse's future receipt is used before another warehouse's on-hand stock.
 - **Conditional updates for concurrency.** State changes use `updateMany` with the expected current status, inside transactions, rather than explicit row locks or version columns. This gives clean `409` conflicts with little code, but order edits have no stale-write check yet.
-- **Draft-only order edits.** Allowing edits only before confirmation keeps allocation behavior simple, but planners cannot change confirmed orders.
+- **Draft-only order edits, plus narrow planner actions.** Free-form edits stop at confirmation; after that, only the four reasoned planner actions can change an order. This keeps every post-confirmation change explained and audited, but quantity changes and line additions on confirmed orders are still not possible.
+- **Audit in the same transaction.** Writing the audit entry inside the change's transaction guarantees the log matches the data, at the cost of one extra insert per write. AI entries are the exception: they are written best-effort, because they describe a read-only event.
 - **AI as advisory text only.** Not letting AI write to the database removes a whole class of risk, at the cost of features that need a review-and-apply step.
 
 ## Known Gaps and Next Steps
 
 Compared with the full brief, these items are not implemented yet, roughly in priority order:
 
-1. **Audit log and AI interaction log.** A general `AuditLog` table for receipt edits, status changes and planner actions, and an `AiInteraction` table recording prompt inputs, outputs, model and user decisions.
-2. **Planner actions.** Expedite a receipt (with reason), reassign a line's fulfillment location, override a promised date (with reason), and split a shipment, each writing an audit entry.
-3. **Order edits after confirmation.** Defined behavior for quantity changes and line additions or deletions on `CONFIRMED` orders, with an optimistic version check.
-4. **More exception types.** Detect receipts that are delayed (store the original expected arrival) or canceled under an order, and high-priority orders without enough on-hand.
-5. **Richer fulfillment timeline.** A planned location column, promise reasons naming the receipt and date (for example "Waiting for inbound DEMO-RCV-001 arriving 20 Nov"), and a SKU-level supply and demand event timeline on the order detail page.
-6. **Search, filters and sorting.** Date range and exception-type filters on orders, and sorting by promised date, risk and order age.
-7. **AI review and confirm flow.** Edit a customer draft and save it as a "sent message" record, and per-order exception summaries ("What happened", "Current plan", "Next best actions").
-8. **API versioning and authentication.** A `/api/v1` global prefix and a basic auth guard.
-9. **Tests.** Unit tests for allocation, ATP and promise rules, API tests for receipt receiving, order edits and the exception lifecycle, and fixes for the scaffolded specs that lack a `PrismaService` mock.
-10. **Bulk operations.** Bulk creation of receipts and orders.
+1. **Order edits after confirmation.** Defined behavior for quantity changes and line additions or deletions on `CONFIRMED` orders, with an optimistic version check.
+2. **More exception types.** Detect receipts that are delayed (the audit log now holds the original expected arrival) or canceled under an order, and high-priority orders without enough on-hand.
+3. **Richer fulfillment timeline.** A planned location column, promise reasons naming the receipt and date (for example "Waiting for inbound DEMO-RCV-001 arriving 20 Nov"), and a SKU-level supply and demand event timeline on the order detail page.
+4. **Search, filters and sorting.** Date range and exception-type filters on orders, and sorting by promised date, risk and order age.
+5. **AI review and confirm flow.** Edit a customer draft and save it as a "sent message" record (with the planner's accept or discard decision in the audit log), and per-order exception summaries ("What happened", "Current plan", "Next best actions").
+6. **API versioning and authentication.** A `/api/v1` global prefix and a basic auth guard; the audit `actor` would then come from the signed-in user instead of the fixed `planner`.
+7. **Tests.** Unit tests for the remaining allocation and ATP rules (promise overrides are covered), and API tests against a real database for receipt receiving, order edits, planner actions and the exception lifecycle.
+8. **Audit log housekeeping.** Paging past the 500-entry limit, date-range filters, and a retention policy.
+9. **Bulk operations.** Bulk creation of receipts and orders.
 
 Longer term: optional SKU lead time and location timezone, AI shortage insights, real-time updates, deployment and CI/CD, and centralized monitoring.
 

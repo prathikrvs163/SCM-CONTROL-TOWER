@@ -10,11 +10,14 @@ import { OrdersModule } from './orders/orders.module.js';
 import { AllocationModule } from './allocation/allocation.module.js';
 import { ExceptionsModule } from './exceptions/exceptions.module.js';
 import { AiModule } from './ai/ai.module.js';
+import { AuditModule } from './audit/audit.module.js';
+import { PlannerActionsModule } from './planner-actions/planner-actions.module.js';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
+    AuditModule,
     SkusModule,
     WarehousesModule,
     InventoryModule,
@@ -23,6 +26,7 @@ import { AiModule } from './ai/ai.module.js';
     AllocationModule,
     ExceptionsModule,
     AiModule,
+    PlannerActionsModule,
   ],
   controllers: [AppController],
 })

@@ -19,6 +19,7 @@ import type {
 import { fetchSkus } from '../features/skus/skuSlice';
 import { fetchWarehouses } from '../features/warehouses/warehouseSlice';
 import { fetchInventory } from '../features/inventory/inventorySlice';
+import ExpediteReceiptPanel from '../features/planner/ExpediteReceiptPanel';
 
 import type { InboundReceipt, ReceiptStatus } from '../types';
 
@@ -63,6 +64,8 @@ function SupplyManagement() {
   const [form, setForm] = useState<CreateReceiptInput>(emptyForm);
   const [formError, setFormError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [expeditingReceipt, setExpeditingReceipt] =
+    useState<InboundReceipt | null>(null);
 
   useEffect(() => {
     dispatch(fetchReceipts());
@@ -130,6 +133,7 @@ function SupplyManagement() {
     });
     setFormError('');
     setSuccessMessage('');
+    setExpeditingReceipt(null);
     setShowForm(true);
   }
 
@@ -147,6 +151,7 @@ function SupplyManagement() {
     });
     setFormError('');
     setSuccessMessage('');
+    setExpeditingReceipt(null);
     setShowForm(true);
   }
 
@@ -340,6 +345,19 @@ function SupplyManagement() {
 
       {successMessage && (
         <p className="success-banner">{successMessage}</p>
+      )}
+
+      {expeditingReceipt && (
+        <ExpediteReceiptPanel
+          key={expeditingReceipt.id}
+          receipt={expeditingReceipt}
+          onClose={() => setExpeditingReceipt(null)}
+          onCompleted={async (message) => {
+            setExpeditingReceipt(null);
+            setSuccessMessage(message);
+            await dispatch(fetchReceipts());
+          }}
+        />
       )}
 
       {showForm && (
@@ -606,6 +624,18 @@ function SupplyManagement() {
                                 Dispatch
                               </button>
                             )}
+
+                            <button
+                              className="table-action"
+                              disabled={saving}
+                              onClick={() => {
+                                setShowForm(false);
+                                setSuccessMessage('');
+                                setExpeditingReceipt(receipt);
+                              }}
+                            >
+                              Expedite
+                            </button>
 
                             <button
                               className="table-action supply-receive-action"

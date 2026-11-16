@@ -8,6 +8,7 @@ import {
 
 import { Prisma, ReceiptStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { AuditEntityType, AuditService } from '../audit/audit.service.js';
 
 import { CreateInboundReceiptDto } from './dto/create-inbound-receipt.dto.js';
 import { UpdateInboundReceiptDto } from './dto/update-inbound-receipt.dto.js';
@@ -15,7 +16,22 @@ import { UpdateInboundReceiptStatusDto } from './dto/update-inbound-receipt-stat
 
 @Injectable()
 export class InboundReceiptsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
+
+  private receiptSnapshot(receipt: {
+    status: ReceiptStatus;
+    quantity: number;
+    expectedArrivalTime: Date;
+  }) {
+    return {
+      status: receipt.status,
+      quantity: receipt.quantity,
+      expectedArrivalTime: receipt.expectedArrivalTime,
+    };
+  }
 
   async findAll() {
     return this.prisma.inboundReceipt.findMany({
@@ -55,15 +71,31 @@ export class InboundReceiptsService {
     }
 
     try {
-      return await this.prisma.inboundReceipt.create({
-        data: {
-          receiptId: dto.receiptId.trim(),
-          skuId: dto.skuId,
-          warehouseId: dto.warehouseId,
-          expectedArrivalTime: new Date(dto.expectedArrivalTime),
-          quantity: dto.quantity,
-        },
-        include: { sku: true, warehouse: true },
+      return await this.prisma.$transaction(async (tx) => {
+        const receipt = await tx.inboundReceipt.create({
+          data: {
+            receiptId: dto.receiptId.trim(),
+            skuId: dto.skuId,
+            warehouseId: dto.warehouseId,
+            expectedArrivalTime: new Date(dto.expectedArrivalTime),
+            quantity: dto.quantity,
+          },
+          include: { sku: true, warehouse: true },
+        });
+
+        await this.audit.record(tx, {
+          entityType: AuditEntityType.INBOUND_RECEIPT,
+          entityId: receipt.id,
+          entityRef: receipt.receiptId,
+          action: 'RECEIPT_CREATED',
+          after: {
+            ...this.receiptSnapshot(receipt),
+            skuCode: receipt.sku.skuCode,
+            warehouseCode: receipt.warehouse.code,
+          },
+        });
+
+        return receipt;
       });
     } catch (error) {
       if (
@@ -95,22 +127,37 @@ export class InboundReceiptsService {
       throw new BadRequestException('Provide an ETA or quantity to update');
     }
 
-    const updated = await this.prisma.inboundReceipt.updateMany({
-      where: {
-        id,
-        status: { in: [ReceiptStatus.PLANNED, ReceiptStatus.IN_TRANSIT] },
-      },
-      data: {
-        ...(dto.expectedArrivalTime !== undefined
-          ? { expectedArrivalTime: new Date(dto.expectedArrivalTime) }
-          : {}),
-        ...(dto.quantity !== undefined ? { quantity: dto.quantity } : {}),
-      },
-    });
+    const changes = {
+      ...(dto.expectedArrivalTime !== undefined
+        ? { expectedArrivalTime: new Date(dto.expectedArrivalTime) }
+        : {}),
+      ...(dto.quantity !== undefined ? { quantity: dto.quantity } : {}),
+    };
 
-    if (updated.count !== 1) {
-      throw new ConflictException('Receipt status changed; reload and retry');
-    }
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.inboundReceipt.updateMany({
+        where: {
+          id,
+          status: { in: [ReceiptStatus.PLANNED, ReceiptStatus.IN_TRANSIT] },
+        },
+        data: changes,
+      });
+
+      if (updated.count !== 1) {
+        throw new ConflictException(
+          'Receipt status changed; reload and retry',
+        );
+      }
+
+      await this.audit.record(tx, {
+        entityType: AuditEntityType.INBOUND_RECEIPT,
+        entityId: id,
+        entityRef: receipt.receiptId,
+        action: 'RECEIPT_UPDATED',
+        before: this.receiptSnapshot(receipt),
+        after: { ...this.receiptSnapshot(receipt), ...changes },
+      });
+    });
 
     return this.findOne(id);
   }
@@ -139,17 +186,33 @@ export class InboundReceiptsService {
       );
     }
 
-    const updated = await this.prisma.inboundReceipt.updateMany({
-      where: {
-        id,
-        status: receipt.status,
-      },
-      data: { status: dto.status },
-    });
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.inboundReceipt.updateMany({
+        where: {
+          id,
+          status: receipt.status,
+        },
+        data: { status: dto.status },
+      });
 
-    if (updated.count !== 1) {
-      throw new ConflictException('Receipt status changed; reload and retry');
-    }
+      if (updated.count !== 1) {
+        throw new ConflictException(
+          'Receipt status changed; reload and retry',
+        );
+      }
+
+      await this.audit.record(tx, {
+        entityType: AuditEntityType.INBOUND_RECEIPT,
+        entityId: id,
+        entityRef: receipt.receiptId,
+        action:
+          dto.status === ReceiptStatus.CANCELED
+            ? 'RECEIPT_CANCELED'
+            : 'RECEIPT_DISPATCHED',
+        before: { status: receipt.status },
+        after: { status: dto.status },
+      });
+    });
 
     return this.findOne(id);
   }
@@ -223,6 +286,18 @@ export class InboundReceiptsService {
           warehouseId: receipt.warehouseId,
           quantityChange: receipt.quantity,
           reason: `Inbound receipt received: ${receipt.receiptId}`,
+        },
+      });
+
+      await this.audit.record(tx, {
+        entityType: AuditEntityType.INBOUND_RECEIPT,
+        entityId: id,
+        entityRef: receipt.receiptId,
+        action: 'RECEIPT_RECEIVED',
+        before: { status: receipt.status },
+        after: {
+          status: ReceiptStatus.RECEIVED,
+          quantityAddedToOnHand: receipt.quantity,
         },
       });
 

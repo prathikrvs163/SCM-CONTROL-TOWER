@@ -69,6 +69,8 @@ export interface OrderLine {
   skuId: string;
   quantity: number;
   preferredWarehouseId: string | null;
+  promisedShipDateOverride: string | null;
+  promiseOverrideReason: string | null;
   sku: Sku;
   preferredWarehouse: Warehouse | null;
 }
@@ -80,6 +82,7 @@ export interface Order {
   priority: Priority;
   requestedShipDate: string | null;
   status: OrderStatus;
+  splitFromOrderId: string | null;
   createdAt: string;
   updatedAt: string;
   lines: OrderLine[];
@@ -121,6 +124,9 @@ export interface AllocationLine {
   allocations: Allocation[];
   requestedShipDate: string | null;
   promisedShipDate: string | null;
+  /** What the engine would promise without a planner override. */
+  computedPromisedShipDate: string | null;
+  promiseOverridden: boolean;
   isLate: boolean;
   promiseReason: string;
 }
@@ -232,3 +238,23 @@ export type OrderStatusUpdate =
   | 'FULFILLING'
   | 'SHIPPED'
   | 'CANCELED';
+
+export type AuditEntityType = 'INBOUND_RECEIPT' | 'ORDER' | 'AI_INTERACTION';
+
+export interface AuditLogEntry {
+  id: string;
+  entityType: AuditEntityType;
+  entityId: string;
+  entityRef: string | null;
+  action: string;
+  reason: string | null;
+  actor: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface SplitOrderResult {
+  originalOrder: Order;
+  splitOrder: Order;
+}

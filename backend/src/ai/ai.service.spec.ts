@@ -12,9 +12,11 @@ import type { AiErrorCode } from './ai.service.js';
 import { ExceptionsService } from '../exceptions/exceptions.service.js';
 import { OrdersService } from '../orders/orders.service.js';
 import { AllocationService } from '../allocation/allocation.service.js';
+import { AuditService } from '../audit/audit.service.js';
 
-const { generateContent } = vi.hoisted(() => ({
+const { generateContent, recordSafely } = vi.hoisted(() => ({
   generateContent: vi.fn(),
+  recordSafely: vi.fn(),
 }));
 
 vi.mock('@google/genai', async (importOriginal) => {
@@ -93,6 +95,7 @@ describe('AiService', () => {
 
   beforeEach(async () => {
     generateContent.mockReset();
+    recordSafely.mockReset();
     apiKey = API_KEY;
 
     const module: TestingModule = await Test.createTestingModule({
@@ -127,6 +130,10 @@ describe('AiService', () => {
         {
           provide: AllocationService,
           useValue: { getPlan: () => Promise.resolve({ orders: [] }) },
+        },
+        {
+          provide: AuditService,
+          useValue: { recordSafely },
         },
       ],
     }).compile();
@@ -338,5 +345,49 @@ describe('AiService', () => {
       { contents: string },
     ];
     expect(contents).toContain('Dear Acme Retail,');
+  });
+
+  it('records a successful generation in the audit log without the prompt', async () => {
+    generateContent.mockResolvedValueOnce({ text: 'Dear Acme Retail, thanks.' });
+
+    await service.generateCustomerCommunication('order-1');
+
+    expect(recordSafely).toHaveBeenCalledTimes(1);
+    const [entry] = recordSafely.mock.calls[0] as [Record<string, any>];
+    expect(entry).toMatchObject({
+      entityType: 'AI_INTERACTION',
+      entityId: 'order-1',
+      entityRef: 'SO-1001',
+      action: 'AI_CUSTOMER_DRAFT',
+      after: {
+        model: 'gemini-3.8-flash',
+        outcome: 'SUCCESS',
+        output: 'Dear Acme Retail, thanks.',
+      },
+    });
+    expect(entry.before.promptCharacters).toBeGreaterThan(0);
+    expect(JSON.stringify(entry)).not.toContain('Order information:');
+  });
+
+  it('records a failed generation with its errorCode and still throws', async () => {
+    generateContent.mockRejectedValueOnce(apiError(429, QUOTA_DAILY_429));
+
+    await expectHttpError(
+      service.generateExceptionSummary(),
+      429,
+      'GEMINI_QUOTA_EXHAUSTED',
+    );
+
+    expect(recordSafely).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityType: 'AI_INTERACTION',
+        action: 'AI_EXCEPTION_SUMMARY',
+        after: expect.objectContaining({
+          outcome: 'FAILED',
+          httpStatus: 429,
+          errorCode: 'GEMINI_QUOTA_EXHAUSTED',
+        }),
+      }),
+    );
   });
 });

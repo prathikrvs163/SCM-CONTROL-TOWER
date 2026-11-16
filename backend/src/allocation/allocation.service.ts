@@ -252,12 +252,20 @@ export class AllocationService {
         const allocatedQuantity = line.quantity - remainingDemand;
         const backorderedQuantity = remainingDemand;
 
-        const promisedShipDate =
+        const computedPromisedShipDate =
           backorderedQuantity > 0
             ? null
             : latestSupplyDate && latestSupplyDate > planningDate
               ? latestSupplyDate
               : planningDate;
+
+        // A planner override replaces the computed promise; the computed
+        // value is still returned so the difference stays visible.
+        const promiseOverridden = line.promisedShipDateOverride !== null;
+
+        const promisedShipDate = promiseOverridden
+          ? line.promisedShipDateOverride
+          : computedPromisedShipDate;
 
         const requestedShipDate = order.requestedShipDate;
 
@@ -276,6 +284,16 @@ export class AllocationService {
             'Fulfillment depends on inbound inventory.';
         }
 
+        if (promiseOverridden) {
+          promiseReason = `Planner override: ${
+            line.promiseOverrideReason ?? 'no reason recorded'
+          }${
+            backorderedQuantity > 0
+              ? ' (current supply does not cover the full quantity)'
+              : ''
+          }`;
+        }
+
         linePlans.push({
           orderLineId: line.id,
           skuId: line.skuId,
@@ -288,6 +306,8 @@ export class AllocationService {
           allocations,
           requestedShipDate,
           promisedShipDate,
+          computedPromisedShipDate,
+          promiseOverridden,
           isLate,
           promiseReason,
         });

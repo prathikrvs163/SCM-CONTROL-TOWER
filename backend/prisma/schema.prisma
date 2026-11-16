@@ -28,6 +28,12 @@ enum OrderStatus {
   CANCELED
 }
 
+enum AuditEntityType {
+  INBOUND_RECEIPT
+  ORDER
+  AI_INTERACTION
+}
+
 model SKU {
   id                   String                @id @default(cuid())
   skuCode              String                @unique
@@ -106,30 +112,39 @@ model InboundReceipt {
 }
 
 model Order {
-  id                String        @id @default(cuid())
-  orderNumber       String        @unique
+  id                String               @id @default(cuid())
+  orderNumber       String               @unique
   customerName      String
-  priority          OrderPriority @default(MED)
+  priority          OrderPriority        @default(MED)
   requestedShipDate DateTime?
-  status            OrderStatus   @default(DRAFT)
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-  statusHistory OrderStatusHistory[]
+  status            OrderStatus          @default(DRAFT)
+  // Set when a planner splits this order off another one.
+  splitFromOrderId  String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  statusHistory     OrderStatusHistory[]
 
   lines OrderLine[]
 
+  splitFrom Order?  @relation("OrderSplits", fields: [splitFromOrderId], references: [id], onDelete: SetNull)
+  splits    Order[] @relation("OrderSplits")
+
   @@index([status, priority])
   @@index([requestedShipDate])
+  @@index([splitFromOrderId])
 }
 
 model OrderLine {
-  id                   String   @id @default(cuid())
-  orderId              String
-  skuId                String
-  quantity             Int
-  preferredWarehouseId String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                       String    @id @default(cuid())
+  orderId                  String
+  skuId                    String
+  quantity                 Int
+  preferredWarehouseId     String?
+  // Planner override of the computed promise date; null means use the plan.
+  promisedShipDateOverride DateTime?
+  promiseOverrideReason    String?   @db.VarChar(500)
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
   sku   SKU   @relation(fields: [skuId], references: [id], onDelete: Restrict)
@@ -142,13 +157,31 @@ model OrderLine {
 }
 
 model OrderStatusHistory {
-  id         String      @id @default(cuid())
+  id         String       @id @default(cuid())
   orderId    String
   fromStatus OrderStatus?
   toStatus   OrderStatus
-  changedAt  DateTime    @default(now())
+  changedAt  DateTime     @default(now())
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([orderId, changedAt])
+}
+
+// Append-only record of who changed what, when and why.
+model AuditLog {
+  id         String          @id @default(cuid())
+  entityType AuditEntityType
+  entityId   String
+  // Human-readable reference such as a receipt ID or order number.
+  entityRef  String?
+  action     String
+  reason     String?         @db.VarChar(500)
+  actor      String          @default("planner")
+  before     Json?
+  after      Json?
+  createdAt  DateTime        @default(now())
+
+  @@index([entityType, entityId, createdAt])
+  @@index([createdAt])
 }
