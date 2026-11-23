@@ -1,8 +1,23 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import {
+  AlarmClock,
+  Ban,
+  CalendarClock,
+  CircleCheck,
+  FastForward,
+  PackageCheck,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Send,
+  Ship,
+  Truck,
+} from 'lucide-react';
 
 import { useAppDispatch, useAppSelector } from '../app/hooks';
-
+import { useConfirm, useToast } from '../app/providers/contexts';
 import {
   clearSupplyError,
   createReceipt,
@@ -15,15 +30,33 @@ import type {
   CreateReceiptInput,
   UpdateReceiptInput,
 } from '../features/supply/supplySlice';
-
 import { fetchSkus } from '../features/skus/skuSlice';
 import { fetchWarehouses } from '../features/warehouses/warehouseSlice';
 import { fetchInventory } from '../features/inventory/inventorySlice';
 import ExpediteReceiptPanel from '../features/planner/ExpediteReceiptPanel';
 
+import { Button } from '../components/ui/Button';
+import { Card } from '../components/ui/Card';
+import { PageHeader } from '../components/ui/PageHeader';
+import { StatCard } from '../components/ui/StatCard';
+import { Field, SearchInput, SegmentedControl } from '../components/ui/Form';
+import { Alert, EmptyState, TableSkeleton } from '../components/ui/Feedback';
+import { Modal } from '../components/ui/Overlay';
+import { ReceiptStatusBadge } from '../components/ui/StatusBadges';
+import { humanize } from '../components/ui/status';
+import { daysFromToday, formatDate, formatDateTime, relativeDay } from '../utils/format';
+
 import type { InboundReceipt, ReceiptStatus } from '../types';
 
 type StatusFilter = 'ALL' | ReceiptStatus;
+
+const STATUS_FILTERS: StatusFilter[] = [
+  'ALL',
+  'PLANNED',
+  'IN_TRANSIT',
+  'RECEIVED',
+  'CANCELED',
+];
 
 const emptyForm: CreateReceiptInput = {
   receiptId: '',
@@ -41,31 +74,35 @@ function toLocalDateTime(value: string): string {
     .slice(0, 16);
 }
 
-function formatDate(value: string): string {
-  return new Date(value).toLocaleString();
+function isOpen(receipt: InboundReceipt) {
+  return receipt.status === 'PLANNED' || receipt.status === 'IN_TRANSIT';
 }
 
 function SupplyManagement() {
   const dispatch = useAppDispatch();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const { items, loading, saving, error } = useAppSelector(
     (state) => state.supply,
   );
-
   const skus = useAppSelector((state) => state.skus.items);
   const warehouses = useAppSelector((state) => state.warehouses.items);
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
-
   const [showForm, setShowForm] = useState(false);
   const [editingReceipt, setEditingReceipt] =
     useState<InboundReceipt | null>(null);
   const [form, setForm] = useState<CreateReceiptInput>(emptyForm);
   const [formError, setFormError] = useState('');
-  const [successMessage, setSuccessMessage] = useState('');
   const [expeditingReceipt, setExpeditingReceipt] =
     useState<InboundReceipt | null>(null);
+
+  // `?new=1` (from the command palette) opens the create dialog.
+  const createRequested = searchParams.get('new') === '1';
+  const formOpen = showForm || createRequested;
 
   useEffect(() => {
     dispatch(fetchReceipts());
@@ -74,15 +111,23 @@ function SupplyManagement() {
     dispatch(clearSupplyError());
   }, [dispatch]);
 
-  const activeSkus = useMemo(
-    () => skus.filter((sku) => sku.isActive),
-    [skus],
-  );
-
+  const activeSkus = useMemo(() => skus.filter((sku) => sku.isActive), [skus]);
   const activeWarehouses = useMemo(
     () => warehouses.filter((warehouse) => warehouse.isActive),
     [warehouses],
   );
+
+  const statusCounts = useMemo(() => {
+    const counts: Record<StatusFilter, number> = {
+      ALL: items.length,
+      PLANNED: 0,
+      IN_TRANSIT: 0,
+      RECEIVED: 0,
+      CANCELED: 0,
+    };
+    for (const receipt of items) counts[receipt.status] += 1;
+    return counts;
+  }, [items]);
 
   const filteredReceipts = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -103,25 +148,14 @@ function SupplyManagement() {
     });
   }, [items, search, statusFilter]);
 
-  const plannedCount = items.filter(
-    (receipt) => receipt.status === 'PLANNED',
+  const openReceipts = items.filter(isOpen);
+  const overdueCount = openReceipts.filter(
+    (receipt) => daysFromToday(receipt.expectedArrivalTime) < 0,
   ).length;
-
-  const inTransitCount = items.filter(
-    (receipt) => receipt.status === 'IN_TRANSIT',
-  ).length;
-
-  const receivedCount = items.filter(
-    (receipt) => receipt.status === 'RECEIVED',
-  ).length;
-
-  const outstandingUnits = items
-    .filter(
-      (receipt) =>
-        receipt.status === 'PLANNED' ||
-        receipt.status === 'IN_TRANSIT',
-    )
-    .reduce((sum, receipt) => sum + receipt.quantity, 0);
+  const outstandingUnits = openReceipts.reduce(
+    (sum, receipt) => sum + receipt.quantity,
+    0,
+  );
 
   function openCreateForm() {
     dispatch(clearSupplyError());
@@ -132,8 +166,6 @@ function SupplyManagement() {
       warehouseId: activeWarehouses[0]?.id ?? '',
     });
     setFormError('');
-    setSuccessMessage('');
-    setExpeditingReceipt(null);
     setShowForm(true);
   }
 
@@ -144,14 +176,10 @@ function SupplyManagement() {
       receiptId: receipt.receiptId,
       skuId: receipt.skuId,
       warehouseId: receipt.warehouseId,
-      expectedArrivalTime: toLocalDateTime(
-        receipt.expectedArrivalTime,
-      ),
+      expectedArrivalTime: toLocalDateTime(receipt.expectedArrivalTime),
       quantity: receipt.quantity,
     });
     setFormError('');
-    setSuccessMessage('');
-    setExpeditingReceipt(null);
     setShowForm(true);
   }
 
@@ -161,6 +189,13 @@ function SupplyManagement() {
     setForm(emptyForm);
     setFormError('');
     dispatch(clearSupplyError());
+    if (createRequested) {
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        next.delete('new');
+        return next;
+      });
+    }
   }
 
   function handleChange(
@@ -176,11 +211,14 @@ function SupplyManagement() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
     setFormError('');
-    setSuccessMessage('');
 
-    if (!form.skuId || !form.warehouseId) {
+    // A create opened from the command palette has no defaults yet.
+    const skuId = form.skuId || (editingReceipt ? '' : activeSkus[0]?.id) || '';
+    const warehouseId =
+      form.warehouseId || (editingReceipt ? '' : activeWarehouses[0]?.id) || '';
+
+    if (!skuId || !warehouseId) {
       setFormError('Select both a SKU and a warehouse.');
       return;
     }
@@ -195,9 +233,7 @@ function SupplyManagement() {
       return;
     }
 
-    const expectedArrivalTime = new Date(
-      form.expectedArrivalTime,
-    ).toISOString();
+    const expectedArrivalTime = new Date(form.expectedArrivalTime).toISOString();
 
     try {
       if (editingReceipt) {
@@ -207,13 +243,13 @@ function SupplyManagement() {
         };
 
         await dispatch(
-          updateReceipt({
-            id: editingReceipt.id,
-            data: payload,
-          }),
+          updateReceipt({ id: editingReceipt.id, data: payload }),
         ).unwrap();
 
-        setSuccessMessage('Inbound receipt updated successfully.');
+        toast({
+          title: 'Receipt updated',
+          description: `${editingReceipt.receiptId} saved. The allocation plan uses the new values immediately.`,
+        });
       } else {
         if (form.receiptId.trim().length < 3) {
           setFormError('Receipt ID must contain at least 3 characters.');
@@ -222,22 +258,20 @@ function SupplyManagement() {
 
         const payload: CreateReceiptInput = {
           receiptId: form.receiptId.trim(),
-          skuId: form.skuId,
-          warehouseId: form.warehouseId,
+          skuId,
+          warehouseId,
           expectedArrivalTime,
           quantity: form.quantity,
         };
 
         await dispatch(createReceipt(payload)).unwrap();
-        setSuccessMessage('Inbound receipt created successfully.');
+        toast({
+          title: 'Receipt created',
+          description: `${payload.receiptId} is now planned supply.`,
+        });
       }
 
       closeForm();
-      setSuccessMessage(
-        editingReceipt
-          ? 'Inbound receipt updated successfully.'
-          : 'Inbound receipt created successfully.',
-      );
     } catch {
       // Redux stores the API error.
     }
@@ -247,433 +281,452 @@ function SupplyManagement() {
     receipt: InboundReceipt,
     status: 'IN_TRANSIT' | 'CANCELED',
   ) {
-    const message =
+    const confirmed = await confirm(
       status === 'CANCELED'
-        ? `Cancel receipt ${receipt.receiptId}? This cannot be undone.`
-        : `Mark receipt ${receipt.receiptId} as in transit?`;
+        ? {
+            title: `Cancel ${receipt.receiptId}?`,
+            description:
+              'It drops out of planned supply. Orders relying on it are re-planned and may become backordered. This cannot be undone.',
+            confirmLabel: 'Cancel receipt',
+            tone: 'danger',
+          }
+        : {
+            title: `Mark ${receipt.receiptId} as in transit?`,
+            description: `${receipt.quantity} units of ${receipt.sku.skuCode} are on the way to ${receipt.warehouse.code}.`,
+            confirmLabel: 'Mark in transit',
+          },
+    );
 
-    if (!window.confirm(message)) return;
-
-    setSuccessMessage('');
+    if (!confirmed) return;
 
     try {
-      await dispatch(
-        updateReceiptStatus({ id: receipt.id, status }),
-      ).unwrap();
+      await dispatch(updateReceiptStatus({ id: receipt.id, status })).unwrap();
 
-      setSuccessMessage(
-        status === 'CANCELED'
-          ? `${receipt.receiptId} was canceled.`
-          : `${receipt.receiptId} is now in transit.`,
-      );
+      toast({
+        title:
+          status === 'CANCELED'
+            ? `${receipt.receiptId} canceled`
+            : `${receipt.receiptId} is in transit`,
+      });
     } catch {
-      // Redux stores the API error.
+      toast({ title: 'Status not changed', tone: 'error' });
     }
   }
 
   async function handleReceive(receipt: InboundReceipt) {
-    if (
-      !window.confirm(
-        `Receive ${receipt.quantity} units for ${receipt.receiptId}? Inventory will be increased.`,
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: `Receive ${receipt.receiptId}?`,
+      description: `${receipt.quantity} units of ${receipt.sku.skuCode} are added to on-hand at ${receipt.warehouse.code}. Receiving is idempotent: repeating it never adds stock twice.`,
+      confirmLabel: 'Receive stock',
+    });
 
-    setSuccessMessage('');
+    if (!confirmed) return;
 
     try {
       await dispatch(receiveReceipt(receipt.id)).unwrap();
-
       await dispatch(fetchInventory()).unwrap();
 
-      setSuccessMessage(
-        `${receipt.receiptId} received. Inventory balances have been refreshed.`,
-      );
+      toast({
+        title: `${receipt.receiptId} received`,
+        description: 'Inventory balances have been refreshed.',
+      });
     } catch {
-      // Redux stores the API error.
+      toast({ title: 'Receipt not received', tone: 'error' });
     }
   }
 
-  function statusClass(status: ReceiptStatus): string {
-    return `receipt-status receipt-${status.toLowerCase()}`;
-  }
-
   return (
-    <main className="page-container supply-page">
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">INBOUND OPERATIONS</p>
-          <h1>Supply Management</h1>
-          <p className="page-subtitle">
-            Track inbound receipts, expected arrivals and stock receiving.
-          </p>
-        </div>
-
-        <button
-          className="primary-button"
-          onClick={openCreateForm}
-          disabled={
-            activeSkus.length === 0 || activeWarehouses.length === 0
-          }
-        >
-          + Create Receipt
-        </button>
-      </header>
-
-      <section className="sku-stat-grid supply-stat-grid">
-        <article className="stat-card">
-          <span>Planned Receipts</span>
-          <strong>{plannedCount}</strong>
-        </article>
-
-        <article className="stat-card">
-          <span>In Transit</span>
-          <strong>{inTransitCount}</strong>
-        </article>
-
-        <article className="stat-card">
-          <span>Received</span>
-          <strong>{receivedCount}</strong>
-        </article>
-
-        <article className="stat-card">
-          <span>Outstanding Units</span>
-          <strong>{outstandingUnits.toLocaleString()}</strong>
-        </article>
-      </section>
-
-      {successMessage && (
-        <p className="success-banner">{successMessage}</p>
-      )}
-
-      {expeditingReceipt && (
-        <ExpediteReceiptPanel
-          key={expeditingReceipt.id}
-          receipt={expeditingReceipt}
-          onClose={() => setExpeditingReceipt(null)}
-          onCompleted={async (message) => {
-            setExpeditingReceipt(null);
-            setSuccessMessage(message);
-            await dispatch(fetchReceipts());
-          }}
-        />
-      )}
-
-      {showForm && (
-        <section className="sku-form-panel">
-          <div className="section-heading">
-            <div>
-              <h2>
-                {editingReceipt ? 'Edit Inbound Receipt' : 'Create Inbound Receipt'}
-              </h2>
-              <p>
-                {editingReceipt
-                  ? 'Update the expected arrival time or quantity.'
-                  : 'Register a new expected supply delivery.'}
-              </p>
-            </div>
-
-            <button className="text-button" onClick={closeForm}>
-              Cancel
-            </button>
-          </div>
-
-          <form className="sku-form" onSubmit={handleSubmit}>
-            {!editingReceipt && (
-              <label>
-                Receipt ID *
-                <input
-                  name="receiptId"
-                  value={form.receiptId}
-                  onChange={handleChange}
-                  placeholder="e.g. PO-RECEIPT-004"
-                  minLength={3}
-                  maxLength={100}
-                  required
-                />
-              </label>
-            )}
-
-            <label>
-              SKU *
-              <select
-                name="skuId"
-                value={form.skuId}
-                onChange={handleChange}
-                disabled={Boolean(editingReceipt)}
-                required
-              >
-                <option value="">Select SKU</option>
-                {activeSkus.map((sku) => (
-                  <option key={sku.id} value={sku.id}>
-                    {sku.skuCode} — {sku.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              Warehouse *
-              <select
-                name="warehouseId"
-                value={form.warehouseId}
-                onChange={handleChange}
-                disabled={Boolean(editingReceipt)}
-                required
-              >
-                <option value="">Select warehouse</option>
-                {activeWarehouses.map((warehouse) => (
-                  <option key={warehouse.id} value={warehouse.id}>
-                    {warehouse.code} — {warehouse.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              Quantity *
-              <input
-                type="number"
-                name="quantity"
-                value={form.quantity}
-                onChange={handleChange}
-                min="1"
-                step="1"
-                required
-              />
-            </label>
-
-            <label>
-              Expected Arrival *
-              <input
-                type="datetime-local"
-                name="expectedArrivalTime"
-                value={form.expectedArrivalTime}
-                onChange={handleChange}
-                required
-              />
-            </label>
-
-            {(formError || (error && showForm)) && (
-              <p className="form-error">{formError || error}</p>
-            )}
-
-            <div className="form-actions full-width">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={closeForm}
-              >
-                Cancel
-              </button>
-
-              <button
-                type="submit"
-                className="primary-button"
-                disabled={saving}
-              >
-                {saving
-                  ? 'Saving...'
-                  : editingReceipt
-                    ? 'Save Changes'
-                    : 'Create Receipt'}
-              </button>
-            </div>
-          </form>
-        </section>
-      )}
-
-      <section className="sku-table-panel">
-        <div className="section-heading">
-          <div>
-            <h2>Inbound Receipts</h2>
-            <p>{filteredReceipts.length} receipts</p>
-          </div>
-
-          <button
-            className="secondary-button"
-            onClick={() => dispatch(fetchReceipts())}
-            disabled={loading}
-          >
-            {loading ? 'Refreshing...' : 'Refresh'}
-          </button>
-        </div>
-
-        <div className="sku-toolbar">
-          <input
-            className="sku-search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search receipt, SKU or warehouse..."
-          />
-
-          <select
-            value={statusFilter}
-            onChange={(event) =>
-              setStatusFilter(event.target.value as StatusFilter)
-            }
-          >
-            <option value="ALL">All Statuses</option>
-            <option value="PLANNED">Planned</option>
-            <option value="IN_TRANSIT">In Transit</option>
-            <option value="RECEIVED">Received</option>
-            <option value="CANCELED">Canceled</option>
-          </select>
-        </div>
-
-        {error && !showForm && (
-          <div className="error-state">
-            <p>{error}</p>
-            <button
-              className="secondary-button"
+    <div className="page">
+      <PageHeader
+        eyebrow="Operations"
+        eyebrowIcon={<Truck />}
+        title="Supply"
+        description="Inbound receipts and expected arrivals. Changes flow straight into allocation and promise dates."
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              icon={<RefreshCw />}
+              loading={loading}
               onClick={() => dispatch(fetchReceipts())}
             >
-              Retry
-            </button>
-          </div>
-        )}
+              Refresh
+            </Button>
+            <Button
+              variant="primary"
+              icon={<Plus />}
+              onClick={openCreateForm}
+              disabled={activeSkus.length === 0 || activeWarehouses.length === 0}
+            >
+              New receipt
+            </Button>
+          </>
+        }
+      />
 
-        {loading ? (
-          <div className="empty-state">Loading inbound receipts...</div>
+      <div className="stat-grid">
+        <StatCard
+          index={0}
+          label="Planned"
+          value={statusCounts.PLANNED}
+          icon={<CalendarClock />}
+          onClick={() =>
+            setStatusFilter(statusFilter === 'PLANNED' ? 'ALL' : 'PLANNED')
+          }
+          active={statusFilter === 'PLANNED'}
+        />
+        <StatCard
+          index={1}
+          label="In transit"
+          value={statusCounts.IN_TRANSIT}
+          icon={<Ship />}
+          tone="info"
+          onClick={() =>
+            setStatusFilter(statusFilter === 'IN_TRANSIT' ? 'ALL' : 'IN_TRANSIT')
+          }
+          active={statusFilter === 'IN_TRANSIT'}
+        />
+        <StatCard
+          index={2}
+          label="Overdue"
+          value={overdueCount}
+          icon={<AlarmClock />}
+          tone={overdueCount > 0 ? 'danger' : 'success'}
+          hint="Open receipts past their expected arrival"
+        />
+        <StatCard
+          index={3}
+          label="Outstanding units"
+          value={outstandingUnits.toLocaleString()}
+          icon={<Truck />}
+          tone="accent"
+          hint={`Across ${openReceipts.length} open receipts`}
+        />
+        <StatCard
+          index={4}
+          label="Received"
+          value={statusCounts.RECEIVED}
+          icon={<PackageCheck />}
+          tone="success"
+        />
+      </div>
+
+      {error && !formOpen && (
+        <Alert
+          tone="danger"
+          title="Something went wrong"
+          action={
+            <Button size="sm" onClick={() => dispatch(fetchReceipts())}>
+              Retry
+            </Button>
+          }
+        >
+          {error}
+        </Alert>
+      )}
+
+      <Card>
+        <div className="toolbar">
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="Search receipt, SKU or warehouse..."
+          />
+          <SegmentedControl
+            label="Filter by status"
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={STATUS_FILTERS.map((status) => ({
+              value: status,
+              label: status === 'ALL' ? 'All' : humanize(status),
+              count: statusCounts[status],
+            }))}
+          />
+        </div>
+
+        {loading && items.length === 0 ? (
+          <TableSkeleton rows={6} columns={7} />
         ) : filteredReceipts.length === 0 ? (
-          <div className="empty-state">
-            {search || statusFilter !== 'ALL'
-              ? 'No receipts match your search or filter.'
-              : 'No inbound receipts found.'}
-          </div>
+          <EmptyState
+            icon={<Truck />}
+            title={items.length === 0 ? 'No inbound receipts' : 'No receipts match'}
+            description={
+              items.length === 0
+                ? 'Register expected deliveries so the plan can promise against them.'
+                : 'Try a different search or status.'
+            }
+            action={
+              items.length === 0 ? (
+                <Button variant="primary" icon={<Plus />} onClick={openCreateForm}>
+                  New receipt
+                </Button>
+              ) : undefined
+            }
+          />
         ) : (
-          <div className="table-wrapper">
-            <table className="sku-table supply-table">
+          <div className="table-wrap">
+            <table className="table">
               <thead>
                 <tr>
                   <th>Receipt</th>
                   <th>SKU</th>
                   <th>Warehouse</th>
-                  <th>Quantity</th>
-                  <th>Expected Arrival</th>
+                  <th className="num">Quantity</th>
+                  <th>Expected arrival</th>
                   <th>Status</th>
-                  <th>Actions</th>
+                  <th className="actions-cell">Actions</th>
                 </tr>
               </thead>
-
               <tbody>
-                {filteredReceipts.map((receipt) => (
-                  <tr key={receipt.id}>
-                    <td>
-                      <strong className="sku-code">
-                        {receipt.receiptId}
-                      </strong>
-                      <span className="inventory-secondary">
-                        Created {new Date(receipt.createdAt).toLocaleDateString()}
-                      </span>
-                    </td>
+                {filteredReceipts.map((receipt) => {
+                  const days = daysFromToday(receipt.expectedArrivalTime);
+                  const overdue = isOpen(receipt) && days < 0;
 
-                    <td>
-                      <strong>{receipt.sku.skuCode}</strong>
-                      <span className="inventory-secondary">
-                        {receipt.sku.name}
-                      </span>
-                    </td>
-
-                    <td>
-                      <strong>{receipt.warehouse.code}</strong>
-                      <span className="inventory-secondary">
-                        {receipt.warehouse.name}
-                      </span>
-                    </td>
-
-                    <td>{receipt.quantity.toLocaleString()}</td>
-
-                    <td>{formatDate(receipt.expectedArrivalTime)}</td>
-
-                    <td>
-                      <span className={statusClass(receipt.status)}>
-                        {receipt.status.replace('_', ' ')}
-                      </span>
-                      {receipt.receivedAt && (
-                        <span className="inventory-secondary">
-                          Received {formatDate(receipt.receivedAt)}
+                  return (
+                    <tr key={receipt.id}>
+                      <td>
+                        <span className="cell-primary cell-code">
+                          {receipt.receiptId}
                         </span>
-                      )}
-                    </td>
-
-                    <td>
-                      <div className="supply-actions">
-                        {(receipt.status === 'PLANNED' ||
-                          receipt.status === 'IN_TRANSIT') && (
-                          <>
+                        <span className="cell-secondary">
+                          Created {formatDate(receipt.createdAt)}
+                        </span>
+                      </td>
+                      <td>
+                        <span className="cell-primary">{receipt.sku.skuCode}</span>
+                        <span className="cell-secondary">{receipt.sku.name}</span>
+                      </td>
+                      <td>
+                        <span className="cell-primary">{receipt.warehouse.code}</span>
+                        <span className="cell-secondary" title={receipt.warehouse.name}>
+                          {receipt.warehouse.city}
+                        </span>
+                      </td>
+                      <td className="num">{receipt.quantity.toLocaleString()}</td>
+                      <td>
+                        <span className="cell-primary tabular">
+                          {formatDateTime(receipt.expectedArrivalTime)}
+                        </span>
+                        {isOpen(receipt) ? (
+                          <span
+                            className={`cell-secondary${overdue ? ' text-danger' : ''}`}
+                          >
+                            {overdue
+                              ? `Overdue by ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'}`
+                              : relativeDay(receipt.expectedArrivalTime)}
+                          </span>
+                        ) : receipt.receivedAt ? (
+                          <span
+                            className="cell-secondary"
+                            title={formatDateTime(receipt.receivedAt)}
+                          >
+                            Received {formatDate(receipt.receivedAt)}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td>
+                        <ReceiptStatusBadge status={receipt.status} />
+                      </td>
+                      <td className="actions-cell">
+                        {isOpen(receipt) ? (
+                          <div className="row-actions">
                             {receipt.status === 'PLANNED' && (
-                              <button
-                                className="table-action"
-                                disabled={saving}
-                                onClick={() => openEditForm(receipt)}
-                              >
-                                Edit
-                              </button>
+                              <>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  icon={<Pencil />}
+                                  disabled={saving}
+                                  onClick={() => openEditForm(receipt)}
+                                  aria-label={`Edit ${receipt.receiptId}`}
+                                  title="Edit ETA or quantity"
+                                />
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  icon={<Send />}
+                                  disabled={saving}
+                                  onClick={() => handleStatusChange(receipt, 'IN_TRANSIT')}
+                                  aria-label={`Dispatch ${receipt.receiptId}`}
+                                  title="Mark in transit"
+                                />
+                              </>
                             )}
-
-                            {receipt.status === 'PLANNED' && (
-                              <button
-                                className="table-action"
-                                disabled={saving}
-                                onClick={() =>
-                                  handleStatusChange(receipt, 'IN_TRANSIT')
-                                }
-                              >
-                                Dispatch
-                              </button>
-                            )}
-
-                            <button
-                              className="table-action"
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              icon={<FastForward />}
                               disabled={saving}
-                              onClick={() => {
-                                setShowForm(false);
-                                setSuccessMessage('');
-                                setExpeditingReceipt(receipt);
-                              }}
-                            >
-                              Expedite
-                            </button>
-
-                            <button
-                              className="table-action supply-receive-action"
+                              onClick={() => setExpeditingReceipt(receipt)}
+                              aria-label={`Expedite ${receipt.receiptId}`}
+                              title="Expedite: move arrival earlier"
+                            />
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              icon={<CircleCheck />}
                               disabled={saving}
                               onClick={() => handleReceive(receipt)}
                             >
                               Receive
-                            </button>
-
-                            <button
-                              className="table-action supply-cancel-action"
+                            </Button>
+                            <Button
+                              variant="danger-ghost"
+                              size="sm"
+                              icon={<Ban />}
                               disabled={saving}
-                              onClick={() =>
-                                handleStatusChange(receipt, 'CANCELED')
-                              }
-                            >
-                              Cancel
-                            </button>
-                          </>
+                              onClick={() => handleStatusChange(receipt, 'CANCELED')}
+                              aria-label={`Cancel ${receipt.receiptId}`}
+                              title="Cancel receipt"
+                            />
+                          </div>
+                        ) : (
+                          <span className="cell-muted">
+                            {receipt.status === 'RECEIVED' ? 'Completed' : 'Canceled'}
+                          </span>
                         )}
-
-                        {receipt.status === 'RECEIVED' && (
-                          <span className="muted-text">Completed</span>
-                        )}
-
-                        {receipt.status === 'CANCELED' && (
-                          <span className="muted-text">Canceled</span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
-      </section>
-    </main>
+
+        <div className="table-footer">
+          <span>
+            Showing {filteredReceipts.length} of {items.length} receipts
+          </span>
+          <span>Sorted by expected arrival</span>
+        </div>
+      </Card>
+
+      <Modal
+        open={formOpen}
+        onClose={closeForm}
+        title={editingReceipt ? `Edit ${editingReceipt.receiptId}` : 'New inbound receipt'}
+        description={
+          editingReceipt
+            ? 'Update the expected arrival or quantity. The plan picks up the change immediately.'
+            : 'Register an expected supply delivery.'
+        }
+        footer={
+          <>
+            <Button onClick={closeForm}>Cancel</Button>
+            <Button variant="primary" type="submit" form="receipt-form" loading={saving}>
+              {editingReceipt ? 'Save changes' : 'Create receipt'}
+            </Button>
+          </>
+        }
+      >
+        <form id="receipt-form" className="form-grid" onSubmit={handleSubmit}>
+          {(formError || error) && (
+            <Alert tone="danger" className="span-2">
+              {formError || error}
+            </Alert>
+          )}
+
+          {!editingReceipt && (
+            <Field label="Receipt ID" required className="span-2">
+              <input
+                className="input"
+                name="receiptId"
+                value={form.receiptId}
+                onChange={handleChange}
+                placeholder="e.g. PO-RECEIPT-004"
+                minLength={3}
+                maxLength={100}
+                required
+              />
+            </Field>
+          )}
+
+          <Field label="SKU" required>
+            <select
+              className="select"
+              name="skuId"
+              value={form.skuId || (editingReceipt ? '' : (activeSkus[0]?.id ?? ''))}
+              onChange={handleChange}
+              disabled={Boolean(editingReceipt)}
+              required
+            >
+              <option value="">Select SKU</option>
+              {(editingReceipt ? skus : activeSkus).map((sku) => (
+                <option key={sku.id} value={sku.id}>
+                  {sku.skuCode} — {sku.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Warehouse" required>
+            <select
+              className="select"
+              name="warehouseId"
+              value={
+                form.warehouseId ||
+                (editingReceipt ? '' : (activeWarehouses[0]?.id ?? ''))
+              }
+              onChange={handleChange}
+              disabled={Boolean(editingReceipt)}
+              required
+            >
+              <option value="">Select warehouse</option>
+              {(editingReceipt ? warehouses : activeWarehouses).map((warehouse) => (
+                <option key={warehouse.id} value={warehouse.id}>
+                  {warehouse.code} — {warehouse.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Quantity" required>
+            <input
+              className="input"
+              type="number"
+              name="quantity"
+              value={form.quantity}
+              onChange={handleChange}
+              min="1"
+              step="1"
+              required
+            />
+          </Field>
+
+          <Field label="Expected arrival" required>
+            <input
+              className="input"
+              type="datetime-local"
+              name="expectedArrivalTime"
+              value={form.expectedArrivalTime}
+              onChange={handleChange}
+              required
+            />
+          </Field>
+        </form>
+      </Modal>
+
+      <Modal
+        open={Boolean(expeditingReceipt)}
+        onClose={() => setExpeditingReceipt(null)}
+        title={expeditingReceipt ? `Expedite ${expeditingReceipt.receiptId}` : 'Expedite'}
+        description="Move the expected arrival earlier. Orders waiting on this receipt get an earlier promise."
+      >
+        {expeditingReceipt && (
+          <ExpediteReceiptPanel
+            key={expeditingReceipt.id}
+            receipt={expeditingReceipt}
+            onClose={() => setExpeditingReceipt(null)}
+            onCompleted={async (message) => {
+              setExpeditingReceipt(null);
+              toast({ title: 'Receipt expedited', description: message });
+              await dispatch(fetchReceipts());
+            }}
+          />
+        )}
+      </Modal>
+    </div>
   );
 }
 

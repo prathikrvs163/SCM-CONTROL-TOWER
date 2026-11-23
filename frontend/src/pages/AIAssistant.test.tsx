@@ -1,5 +1,6 @@
 import { configureStore } from '@reduxjs/toolkit';
 import { Provider } from 'react-redux';
+import { MemoryRouter } from 'react-router-dom';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,11 +17,18 @@ vi.mock('../services/api', () => ({
   },
 }));
 
+// Matches the shape GET /orders returns.
 const mockOrder = {
   id: 'order-123',
   orderNumber: 'SCM-TEST-001',
   customerName: 'Test Customer',
+  priority: 'MED',
+  requestedShipDate: null,
   status: 'CONFIRMED',
+  splitFromOrderId: null,
+  createdAt: '2026-11-16T09:00:00Z',
+  updatedAt: '2026-11-16T09:00:00Z',
+  lines: [],
 };
 
 const createTestStore = () =>
@@ -36,7 +44,9 @@ function renderPage() {
 
   render(
     <Provider store={store}>
-      <AIAssistant />
+      <MemoryRouter>
+        <AIAssistant />
+      </MemoryRouter>
     </Provider>,
   );
 

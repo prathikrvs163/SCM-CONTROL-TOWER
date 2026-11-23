@@ -1,132 +1,86 @@
-import { useState } from 'react';
+import { lazy, Suspense } from 'react';
+import type { ReactNode } from 'react';
+import { Route, Routes, useNavigate } from 'react-router-dom';
+import { Compass } from 'lucide-react';
 
-import Dashboard from './pages/Dashboard';
-import SkuManagement from './pages/SkuManagement';
-import WarehouseManagement from './pages/WarehouseManagement';
-import InventoryManagement from './pages/InventoryManagement';
-import OrdersManagement from './pages/OrdersManagement';
-import SupplyManagement from './pages/SupplyManagement';
-import ExceptionsManagement from './pages/ExceptionsManagement';
-import AIAssistant from './pages/AIAssistant';
-import AuditLog from './pages/AuditLog';
+import { AppShell } from './layout/AppShell';
+import { Button } from './components/ui/Button';
+import { EmptyState, Skeleton } from './components/ui/Feedback';
 
-type Page = 'dashboard' | 'skus' | 'warehouses' | 'inventory' | 'orders' | 'supply' | 'exceptions' | 'ai' | 'audit';
+// Each page is its own chunk, loaded on first visit.
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const ExceptionsManagement = lazy(() => import('./pages/ExceptionsManagement'));
+const OrdersManagement = lazy(() => import('./pages/OrdersManagement'));
+const SupplyManagement = lazy(() => import('./pages/SupplyManagement'));
+const InventoryManagement = lazy(() => import('./pages/InventoryManagement'));
+const SkuManagement = lazy(() => import('./pages/SkuManagement'));
+const WarehouseManagement = lazy(() => import('./pages/WarehouseManagement'));
+const AIAssistant = lazy(() => import('./pages/AIAssistant'));
+const AuditLog = lazy(() => import('./pages/AuditLog'));
 
-function App() {
-  const [page, setPage] = useState<Page>('dashboard');
+function PageFallback() {
+  return (
+    <div className="page" role="status" aria-label="Loading page">
+      <div>
+        <Skeleton width={90} height={12} />
+        <Skeleton width={240} height={24} style={{ marginTop: 10 }} />
+      </div>
+      <div className="stat-grid">
+        {Array.from({ length: 4 }, (_, index) => (
+          <div className="stat-card" key={index}>
+            <Skeleton width="50%" />
+            <Skeleton width="35%" height={24} />
+          </div>
+        ))}
+      </div>
+      <div className="card card-body">
+        <Skeleton height={220} />
+      </div>
+    </div>
+  );
+}
+
+function page(element: ReactNode) {
+  return <Suspense fallback={<PageFallback />}>{element}</Suspense>;
+}
+
+function NotFound() {
+  const navigate = useNavigate();
 
   return (
-    <div className="app-shell">
-      <nav className="app-nav">
-        <div className="app-brand">
-          <span className="brand-mark">SC</span>
-          <span>Supply Chain Control Tower</span>
-        </div>
-
-        <div className="nav-links">
-          <button
-            className={
-              page === 'dashboard' ? 'nav-link selected' : 'nav-link'
-            }
-            onClick={() => setPage('dashboard')}
-          >
-            Dashboard
-          </button>
-
-          <button
-            className={
-              page === 'skus' ? 'nav-link selected' : 'nav-link'
-            }
-            onClick={() => setPage('skus')}
-          >
-            SKU Management
-          </button>
-
-          <button
-            className={
-              page === 'warehouses' ? 'nav-link selected' : 'nav-link'
-            }
-            onClick={() => setPage('warehouses')}
-          >
-            Warehouses
-          </button>
-
-          <button
-            className={
-              page === 'inventory' ? 'nav-link selected' : 'nav-link'
-            }
-            onClick={() => setPage('inventory')}
-          >
-            Inventory
-          </button>
-
-          <button
-            className={
-              page === 'orders' ? 'nav-link selected' : 'nav-link'
-            }
-            onClick={() => setPage('orders')}
-          >
-            Orders
-          </button>
-
-          <button
-            className={
-              page === 'supply' ? 'nav-link selected' : 'nav-link'
-            }
-            onClick={() => setPage('supply')}
-          >
-            Supply
-          </button>
-
-          <button
-            className={
-              page === 'exceptions' ? 'nav-link selected' : 'nav-link'
-            }
-            onClick={() => setPage('exceptions')}
-          >
-            Exceptions
-          </button>
-
-          <button
-            className={
-              page === 'ai' ? 'nav-link selected' : 'nav-link'
-            }
-            onClick={() => setPage('ai')}
-          >
-            AI Assistant
-          </button>
-
-          <button
-            className={
-              page === 'audit' ? 'nav-link selected' : 'nav-link'
-            }
-            onClick={() => setPage('audit')}
-          >
-            Audit Log
-          </button>
-        </div>
-      </nav>
-
-      <main>
-        {page === 'dashboard' && <Dashboard />}
-
-        {page === 'skus' && <SkuManagement />}
-
-        {page === 'warehouses' && <WarehouseManagement />}
-
-        {page === 'inventory' && <InventoryManagement />}
-
-        {page === 'orders' && <OrdersManagement />}
-
-        {page === 'supply' && <SupplyManagement />}
-
-        {page === 'exceptions' && <ExceptionsManagement />}
-
-        {page === 'ai' && <AIAssistant />}
-
-        {page === 'audit' && <AuditLog />}
-      </main>
+    <div className="page">
+      <div className="card">
+        <EmptyState
+          icon={<Compass />}
+          title="Page not found"
+          description="The page you were looking for does not exist."
+          action={
+            <Button variant="primary" onClick={() => navigate('/')}>
+              Back to dashboard
+            </Button>
+          }
+        />
+      </div>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route element={<AppShell />}>
+        <Route index element={page(<Dashboard />)} />
+        <Route path="exceptions" element={page(<ExceptionsManagement />)} />
+        <Route path="orders" element={page(<OrdersManagement />)} />
+        <Route path="supply" element={page(<SupplyManagement />)} />
+        <Route path="inventory" element={page(<InventoryManagement />)} />
+        <Route path="skus" element={page(<SkuManagement />)} />
+        <Route path="warehouses" element={page(<WarehouseManagement />)} />
+        <Route path="ai" element={page(<AIAssistant />)} />
+        <Route path="audit" element={page(<AuditLog />)} />
+        <Route path="*" element={<NotFound />} />
+      </Route>
+    </Routes>
   );
 }
 

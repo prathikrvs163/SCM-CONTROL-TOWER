@@ -1,8 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
+import {
+  Archive,
+  CircleCheck,
+  Package,
+  PackageCheck,
+  Pencil,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+} from 'lucide-react';
 
 import { useAppDispatch, useAppSelector } from '../app/hooks';
-
+import { useConfirm, useToast } from '../app/providers/contexts';
 import {
   clearSkuError,
   createSku,
@@ -11,8 +21,17 @@ import {
   reactivateSku,
   updateSku,
 } from '../features/skus/skuSlice';
-
 import type { SkuInput } from '../features/skus/skuSlice';
+
+import { Button } from '../components/ui/Button';
+import { Card } from '../components/ui/Card';
+import { PageHeader } from '../components/ui/PageHeader';
+import { StatCard } from '../components/ui/StatCard';
+import { Field, SearchInput, SegmentedControl } from '../components/ui/Form';
+import { Alert, EmptyState, TableSkeleton } from '../components/ui/Feedback';
+import { Modal } from '../components/ui/Overlay';
+import { ActiveBadge } from '../components/ui/StatusBadges';
+import { formatDate } from '../utils/format';
 import type { Sku } from '../types';
 
 type Filter = 'ALL' | 'ACTIVE' | 'INACTIVE';
@@ -26,6 +45,8 @@ const emptyForm: SkuInput = {
 
 function SkuManagement() {
   const dispatch = useAppDispatch();
+  const toast = useToast();
+  const confirm = useConfirm();
 
   const { items, loading, saving, error } = useAppSelector(
     (state) => state.skus,
@@ -73,14 +94,12 @@ function SkuManagement() {
   function openEditForm(sku: Sku) {
     dispatch(clearSkuError());
     setEditingSku(sku);
-
     setForm({
       skuCode: sku.skuCode,
       name: sku.name,
       description: sku.description ?? '',
       unit: sku.unit,
     });
-
     setFormError('');
     setShowForm(true);
   }
@@ -134,14 +153,11 @@ function SkuManagement() {
 
     try {
       if (editingSku) {
-        await dispatch(
-          updateSku({
-            id: editingSku.id,
-            data: payload,
-          }),
-        ).unwrap();
+        await dispatch(updateSku({ id: editingSku.id, data: payload })).unwrap();
+        toast({ title: 'SKU updated', description: payload.skuCode });
       } else {
         await dispatch(createSku(payload)).unwrap();
+        toast({ title: 'SKU created', description: `${payload.skuCode} · ${payload.name}` });
       }
 
       closeForm();
@@ -151,9 +167,13 @@ function SkuManagement() {
   }
 
   async function handleDeactivate(sku: Sku) {
-    const confirmed = window.confirm(
-      `Deactivate SKU ${sku.skuCode}? It will remain in the database.`,
-    );
+    const confirmed = await confirm({
+      title: `Deactivate ${sku.skuCode}?`,
+      description:
+        'It stays in the database and in existing orders, but cannot be used for new orders, receipts or adjustments. You can reactivate it later.',
+      confirmLabel: 'Deactivate',
+      tone: 'danger',
+    });
 
     if (!confirmed) return;
 
@@ -161,6 +181,7 @@ function SkuManagement() {
 
     try {
       await dispatch(deactivateSku(sku.id)).unwrap();
+      toast({ title: `${sku.skuCode} deactivated` });
     } catch {
       // The Redux error is displayed below.
     }
@@ -171,263 +192,172 @@ function SkuManagement() {
 
     try {
       await dispatch(reactivateSku(sku.id)).unwrap();
+      toast({ title: `${sku.skuCode} reactivated` });
     } catch {
       // The Redux error is displayed below.
     }
   }
 
   return (
-    <main className="dashboard sku-page">
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">MASTER DATA MANAGEMENT</p>
-          <h1>SKU Management</h1>
-          <p className="subtitle">
-            Create, maintain and manage your product catalog.
-          </p>
-        </div>
-
-        <button
-          className="primary-button"
-          onClick={openCreateForm}
-        >
-          + Add SKU
-        </button>
-      </header>
-
-      <section className="sku-stat-grid">
-        <article className="metric-card">
-          <p>Total SKUs</p>
-          <h2>{items.length}</h2>
-        </article>
-
-        <article className="metric-card">
-          <p>Active SKUs</p>
-          <h2>{activeCount}</h2>
-        </article>
-
-        <article className="metric-card">
-          <p>Inactive SKUs</p>
-          <h2>{inactiveCount}</h2>
-        </article>
-      </section>
-
-      {showForm && (
-        <section className="panel sku-form-panel">
-          <div className="panel-heading">
-            <h2>{editingSku ? 'Edit SKU' : 'Create SKU'}</h2>
-
-            <button
-              className="text-button"
-              onClick={closeForm}
-            >
-              Cancel
-            </button>
-          </div>
-
-          <form onSubmit={handleSubmit} className="sku-form">
-            <label>
-              SKU Code *
-              <input
-                name="skuCode"
-                value={form.skuCode}
-                onChange={handleChange}
-                minLength={2}
-                maxLength={50}
-                required
-                placeholder="e.g. LAPTOP-001"
-              />
-            </label>
-
-            <label>
-              SKU Name *
-              <input
-                name="name"
-                value={form.name}
-                onChange={handleChange}
-                minLength={2}
-                maxLength={120}
-                required
-                placeholder="e.g. Business Laptop"
-              />
-            </label>
-
-            <label>
-              Unit
-              <input
-                name="unit"
-                value={form.unit ?? ''}
-                onChange={handleChange}
-                maxLength={10}
-                placeholder="EA"
-              />
-            </label>
-
-            <label className="full-width">
-              Description
-              <textarea
-                name="description"
-                value={form.description ?? ''}
-                onChange={handleChange}
-                maxLength={500}
-                rows={3}
-                placeholder="Optional product description"
-              />
-            </label>
-
-            {formError && (
-              <p className="form-error full-width">
-                {formError}
-              </p>
-            )}
-
-            {error && (
-              <p className="form-error full-width">
-                {error}
-              </p>
-            )}
-
-            <div className="form-actions full-width">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={closeForm}
-                disabled={saving}
-              >
-                Cancel
-              </button>
-
-              <button
-                type="submit"
-                className="primary-button"
-                disabled={saving}
-              >
-                {saving
-                  ? 'Saving...'
-                  : editingSku
-                    ? 'Save Changes'
-                    : 'Create SKU'}
-              </button>
-            </div>
-          </form>
-        </section>
-      )}
-
-      <section className="panel sku-table-panel">
-        <div className="panel-heading">
-          <div>
-            <h2>Product Catalog</h2>
-            <span>{filteredSkus.length} records</span>
-          </div>
-        </div>
-
-        <div className="sku-toolbar">
-          <input
-            className="sku-search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search by SKU code or name..."
-          />
-
-          <select
-            value={filter}
-            onChange={(event) =>
-              setFilter(event.target.value as Filter)
-            }
-            aria-label="Filter SKUs"
-          >
-            <option value="ALL">All SKUs</option>
-            <option value="ACTIVE">Active</option>
-            <option value="INACTIVE">Inactive</option>
-          </select>
-        </div>
-
-        {error && !showForm && (
-          <div className="error-banner">
-            {error}
-
-            <button
-              className="text-button"
+    <div className="page">
+      <PageHeader
+        eyebrow="Catalog"
+        eyebrowIcon={<Package />}
+        title="SKUs"
+        description="The product catalog. Deactivated SKUs are kept for history but cannot be used in new transactions."
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              icon={<RefreshCw />}
+              loading={loading}
               onClick={() => dispatch(fetchSkus())}
             >
-              Retry
-            </button>
-          </div>
-        )}
+              Refresh
+            </Button>
+            <Button variant="primary" icon={<Plus />} onClick={openCreateForm}>
+              New SKU
+            </Button>
+          </>
+        }
+      />
 
-        {loading ? (
-          <p className="empty-state">Loading SKUs...</p>
+      <div className="stat-grid">
+        <StatCard index={0} label="Total SKUs" value={items.length} icon={<Package />} tone="accent" />
+        <StatCard
+          index={1}
+          label="Active"
+          value={activeCount}
+          icon={<PackageCheck />}
+          tone="success"
+          onClick={() => setFilter(filter === 'ACTIVE' ? 'ALL' : 'ACTIVE')}
+          active={filter === 'ACTIVE'}
+        />
+        <StatCard
+          index={2}
+          label="Inactive"
+          value={inactiveCount}
+          icon={<Archive />}
+          onClick={() => setFilter(filter === 'INACTIVE' ? 'ALL' : 'INACTIVE')}
+          active={filter === 'INACTIVE'}
+        />
+      </div>
+
+      {error && !showForm && (
+        <Alert
+          tone="danger"
+          title="Something went wrong"
+          action={
+            <Button size="sm" onClick={() => dispatch(fetchSkus())}>
+              Retry
+            </Button>
+          }
+        >
+          {error}
+        </Alert>
+      )}
+
+      <Card>
+        <div className="toolbar">
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="Search by SKU code or name..."
+          />
+          <SegmentedControl
+            label="Filter SKUs"
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: 'ALL', label: 'All', count: items.length },
+              { value: 'ACTIVE', label: 'Active', count: activeCount },
+              { value: 'INACTIVE', label: 'Inactive', count: inactiveCount },
+            ]}
+          />
+        </div>
+
+        {loading && items.length === 0 ? (
+          <TableSkeleton rows={8} columns={5} />
         ) : filteredSkus.length === 0 ? (
-          <p className="empty-state">
-            {items.length === 0
-              ? 'No SKUs found. Create your first SKU.'
-              : 'No SKUs match your search or filter.'}
-          </p>
+          <EmptyState
+            icon={<Package />}
+            title={items.length === 0 ? 'No SKUs yet' : 'No SKUs match'}
+            description={
+              items.length === 0
+                ? 'Create your first SKU to start building the catalog.'
+                : 'Try a different search or filter.'
+            }
+            action={
+              items.length === 0 ? (
+                <Button variant="primary" icon={<Plus />} onClick={openCreateForm}>
+                  New SKU
+                </Button>
+              ) : undefined
+            }
+          />
         ) : (
-          <div className="table-scroll">
-            <table className="sku-table">
+          <div className="table-wrap">
+            <table className="table">
               <thead>
                 <tr>
-                  <th>SKU Code</th>
-                  <th>Name</th>
+                  <th>SKU</th>
                   <th>Description</th>
                   <th>Unit</th>
                   <th>Status</th>
-                  <th>Actions</th>
+                  <th>Updated</th>
+                  <th className="actions-cell">
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
               </thead>
-
               <tbody>
                 {filteredSkus.map((sku) => (
-                  <tr key={sku.id}>
+                  <tr key={sku.id} className={sku.isActive ? undefined : 'is-muted-row'}>
                     <td>
-                      <strong>{sku.skuCode}</strong>
+                      <span className="cell-primary cell-code">{sku.skuCode}</span>
+                      <span className="cell-secondary">{sku.name}</span>
                     </td>
-
-                    <td>{sku.name}</td>
-
-                    <td className="sku-description">
-                      {sku.description || '—'}
+                    <td className="text-secondary cell-truncate" title={sku.description ?? undefined}>
+                      {sku.description || <span className="cell-muted">—</span>}
                     </td>
-
-                    <td>{sku.unit}</td>
-
                     <td>
-                      <span
-                        className={`sku-status ${
-                          sku.isActive ? 'active' : 'inactive'
-                        }`}
-                      >
-                        {sku.isActive ? 'Active' : 'Inactive'}
-                      </span>
+                      <span className="unit-chip">{sku.unit}</span>
                     </td>
-
                     <td>
-                      <div className="sku-actions">
-                        <button
-                          className="text-button"
+                      <ActiveBadge active={sku.isActive} />
+                    </td>
+                    <td className="cell-muted tabular">{formatDate(sku.updatedAt)}</td>
+                    <td className="actions-cell">
+                      <div className="row-actions">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={<Pencil />}
                           onClick={() => openEditForm(sku)}
                           disabled={saving}
                         >
                           Edit
-                        </button>
-
+                        </Button>
                         {sku.isActive ? (
-                          <button
-                            className="text-button danger-text"
+                          <Button
+                            variant="danger-ghost"
+                            size="sm"
+                            icon={<Archive />}
                             onClick={() => handleDeactivate(sku)}
                             disabled={saving}
                           >
                             Deactivate
-                          </button>
+                          </Button>
                         ) : (
-                          <button
-                            className="text-button success-text"
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            icon={<RotateCcw />}
                             onClick={() => handleReactivate(sku)}
                             disabled={saving}
                           >
                             Reactivate
-                          </button>
+                          </Button>
                         )}
                       </div>
                     </td>
@@ -437,8 +367,99 @@ function SkuManagement() {
             </table>
           </div>
         )}
-      </section>
-    </main>
+
+        <div className="table-footer">
+          <span>
+            Showing {filteredSkus.length} of {items.length} SKUs
+          </span>
+          <span className="icon-inline">
+            <CircleCheck /> Soft delete keeps history intact
+          </span>
+        </div>
+      </Card>
+
+      <Modal
+        open={showForm}
+        onClose={closeForm}
+        title={editingSku ? `Edit ${editingSku.skuCode}` : 'New SKU'}
+        description={
+          editingSku
+            ? 'Update the product details.'
+            : 'Add a product to the catalog.'
+        }
+        footer={
+          <>
+            <Button onClick={closeForm} disabled={saving}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" form="sku-form" loading={saving}>
+              {editingSku ? 'Save changes' : 'Create SKU'}
+            </Button>
+          </>
+        }
+      >
+        <form id="sku-form" className="form-grid" onSubmit={handleSubmit}>
+          {(formError || error) && (
+            <Alert tone="danger" className="span-2">
+              {formError || error}
+            </Alert>
+          )}
+
+          <Field label="SKU code" required>
+            <input
+              className="input"
+              name="skuCode"
+              value={form.skuCode}
+              onChange={handleChange}
+              minLength={2}
+              maxLength={50}
+              required
+              placeholder="e.g. LAPTOP-001"
+            />
+          </Field>
+
+          <Field label="Unit" hint="Unit of measure, for example EA or BOX.">
+            <input
+              className="input"
+              name="unit"
+              value={form.unit ?? ''}
+              onChange={handleChange}
+              maxLength={10}
+              placeholder="EA"
+            />
+          </Field>
+
+          <Field label="Name" required className="span-2">
+            <input
+              className="input"
+              name="name"
+              value={form.name}
+              onChange={handleChange}
+              minLength={2}
+              maxLength={120}
+              required
+              placeholder="e.g. Business Laptop"
+            />
+          </Field>
+
+          <Field
+            label="Description"
+            hint={`${form.description?.length ?? 0}/500`}
+            className="span-2"
+          >
+            <textarea
+              className="textarea"
+              name="description"
+              value={form.description ?? ''}
+              onChange={handleChange}
+              maxLength={500}
+              rows={3}
+              placeholder="Optional product description"
+            />
+          </Field>
+        </form>
+      </Modal>
+    </div>
   );
 }
 

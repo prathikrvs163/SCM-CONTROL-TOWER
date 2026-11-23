@@ -1,7 +1,12 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 
+import { CalendarCog, MapPin, Split, X } from 'lucide-react';
+
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
+import { Button } from '../../components/ui/Button';
+import { Alert } from '../../components/ui/Feedback';
+import { Field } from '../../components/ui/Form';
 import type { AllocationOrder, Order, Warehouse } from '../../types';
 import {
   clearPlannerError,
@@ -214,34 +219,44 @@ function OrderPlannerPanel({
     }));
   }
 
+  const Icon =
+    action.kind === 'reassign' ? MapPin : action.kind === 'override' ? CalendarCog : Split;
+
   return (
     <section className="planner-panel" aria-label={title}>
-      <div className="order-section-heading">
-        <div>
-          <p className="page-eyebrow">PLANNER ACTION</p>
+      <div className="planner-panel-head">
+        <span className="planner-panel-icon">
+          <Icon />
+        </span>
+        <div className="planner-panel-title">
+          <span className="planner-panel-eyebrow">Planner action</span>
           <h3>{title}</h3>
           <p>
             {order.orderNumber}
             {line ? ` · ${line.sku.skuCode} × ${line.quantity}` : ''}
           </p>
         </div>
-        <button className="secondary-button" type="button" onClick={close}>
-          Close
-        </button>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<X />}
+          onClick={close}
+          aria-label="Close planner action"
+        />
       </div>
 
-      <form className="sku-form planner-form" onSubmit={handleSubmit}>
+      <form className="form-grid" onSubmit={handleSubmit}>
         {action.kind === 'reassign' && (
           <>
-            <p className="muted-text full-width">
+            <p className="planner-note span-2">
               Current location:{' '}
               <strong>{line?.preferredWarehouse?.code ?? 'No preference'}</strong>.
               The plan draws from the new warehouse first and falls back to
               others only if it cannot cover the quantity.
             </p>
-            <label>
-              New warehouse *
+            <Field label="New warehouse" required>
               <select
+                className="select"
                 value={warehouseId}
                 onChange={(event) => setWarehouseId(event.target.value)}
                 required
@@ -255,13 +270,13 @@ function OrderPlannerPanel({
                     </option>
                   ))}
               </select>
-            </label>
+            </Field>
           </>
         )}
 
         {action.kind === 'override' && (
           <>
-            <p className="muted-text full-width">
+            <p className="planner-note span-2">
               Computed promise:{' '}
               <strong>
                 {planLine
@@ -277,21 +292,21 @@ function OrderPlannerPanel({
                 </>
               )}
             </p>
-            <label>
-              Promised ship date *
+            <Field label="Promised ship date" required>
               <input
+                className="input"
                 type="date"
                 min={todayUtc()}
                 value={promiseDate}
                 onChange={(event) => setPromiseDate(event.target.value)}
               />
-            </label>
+            </Field>
           </>
         )}
 
         {action.kind === 'split' && (
-          <div className="full-width planner-split-lines">
-            <p className="muted-text">
+          <div className="span-2 planner-split">
+            <p className="planner-note">
               Moved quantities go to a new order with the same customer,
               priority, status and queue position. At least one unit must stay
               on {order.orderNumber}.
@@ -302,10 +317,16 @@ function OrderPlannerPanel({
               );
 
               return (
-                <label key={item.id}>
-                  {item.sku.skuCode} — {item.quantity} ordered
-                  {plan ? `, ${plan.backorderedQuantity} backordered` : ''}
+                <div className="planner-split-row" key={item.id}>
+                  <div>
+                    <span className="cell-primary">{item.sku.skuCode}</span>
+                    <span className="cell-secondary">
+                      {item.quantity} ordered
+                      {plan ? ` · ${plan.backorderedQuantity} backordered` : ''}
+                    </span>
+                  </div>
                   <input
+                    className="input"
                     type="number"
                     min="0"
                     max={item.quantity}
@@ -320,41 +341,44 @@ function OrderPlannerPanel({
                     }
                     aria-label={`Units of ${item.sku.skuCode} to move`}
                   />
-                </label>
+                </div>
               );
             })}
           </div>
         )}
 
-        <label className="full-width">
-          Reason * (stored in the audit log)
+        <Field
+          label="Reason"
+          required
+          hint="Stored with the change in the audit log."
+          className="span-2"
+        >
           <textarea
+            className="textarea"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             maxLength={500}
             rows={2}
             required
+            placeholder="Why is this change needed?"
           />
-        </label>
+        </Field>
 
         {(formError || error) && (
-          <div className="form-error full-width">{formError || error}</div>
+          <Alert tone="danger" className="span-2">
+            {formError || error}
+          </Alert>
         )}
 
-        <div className="order-form-actions full-width">
+        <div className="form-actions span-2">
           {action.kind === 'override' && line?.promisedShipDateOverride && (
-            <button
-              className="secondary-button"
-              type="button"
-              disabled={saving}
-              onClick={handleClearOverride}
-            >
+            <Button disabled={saving} onClick={handleClearOverride}>
               Clear override
-            </button>
+            </Button>
           )}
-          <button className="primary-button" type="submit" disabled={saving}>
-            {saving ? 'Saving...' : title}
-          </button>
+          <Button variant="primary" type="submit" loading={saving}>
+            {title}
+          </Button>
         </div>
       </form>
     </section>

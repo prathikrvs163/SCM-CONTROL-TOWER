@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
+import { CalendarClock, Truck } from 'lucide-react';
 
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
+import { Button } from '../../components/ui/Button';
+import { Alert } from '../../components/ui/Feedback';
+import { Field } from '../../components/ui/Form';
 import type { InboundReceipt } from '../../types';
 import { clearPlannerError, expediteReceipt } from './plannerSlice';
 
@@ -11,7 +15,10 @@ interface ExpediteReceiptPanelProps {
   onCompleted: (message: string) => void;
 }
 
-/** Bring a receipt's expected arrival forward, with a required reason. */
+/**
+ * Bring a receipt's expected arrival forward, with a required reason.
+ * Rendered inside a modal on the Supply page.
+ */
 function ExpediteReceiptPanel({
   receipt,
   onClose,
@@ -63,7 +70,7 @@ function ExpediteReceiptPanel({
 
       dispatch(clearPlannerError());
       onCompleted(
-        `${receipt.receiptId} expedited to ${newEta.toLocaleString()}.`,
+        `${receipt.receiptId} now expected ${newEta.toLocaleString()}.`,
       );
     } catch {
       // The planner slice keeps the backend error message.
@@ -71,58 +78,67 @@ function ExpediteReceiptPanel({
   }
 
   return (
-    <section
-      className="sku-form-panel planner-panel"
-      aria-label="Expedite receipt"
-    >
-      <div className="order-section-heading">
+    <form className="form-grid" onSubmit={handleSubmit} aria-label="Expedite receipt">
+      <div className="span-2 expedite-summary">
         <div>
-          <p className="page-eyebrow">PLANNER ACTION</p>
-          <h2>Expedite {receipt.receiptId}</h2>
-          <p>
+          <span className="icon-inline text-muted">
+            <Truck /> Receipt
+          </span>
+          <strong>
             {receipt.sku.skuCode} × {receipt.quantity} into{' '}
-            {receipt.warehouse.code} · currently expected{' '}
-            {new Date(receipt.expectedArrivalTime).toLocaleString()}
-          </p>
+            {receipt.warehouse.code}
+          </strong>
         </div>
-        <button className="secondary-button" type="button" onClick={close}>
-          Close
-        </button>
+        <div>
+          <span className="icon-inline text-muted">
+            <CalendarClock /> Currently expected
+          </span>
+          <strong>
+            {new Date(receipt.expectedArrivalTime).toLocaleString()}
+          </strong>
+        </div>
       </div>
 
-      <form className="sku-form planner-form" onSubmit={handleSubmit}>
-        <label>
-          New expected arrival *
-          <input
-            type="datetime-local"
-            value={arrival}
-            onChange={(event) => setArrival(event.target.value)}
-            required
-          />
-        </label>
+      <Field label="New expected arrival" required className="span-2">
+        <input
+          className="input"
+          type="datetime-local"
+          value={arrival}
+          onChange={(event) => setArrival(event.target.value)}
+          required
+        />
+      </Field>
 
-        <label className="full-width">
-          Reason * (stored in the audit log)
-          <textarea
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            maxLength={500}
-            rows={2}
-            required
-          />
-        </label>
+      <Field
+        label="Reason"
+        required
+        hint="Stored with the change in the audit log."
+        className="span-2"
+      >
+        <textarea
+          className="textarea"
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          maxLength={500}
+          rows={2}
+          required
+          placeholder="e.g. Supplier agreed to air freight"
+        />
+      </Field>
 
-        {(formError || error) && (
-          <div className="form-error full-width">{formError || error}</div>
-        )}
+      {(formError || error) && (
+        <Alert tone="danger" className="span-2">
+          {formError || error}
+        </Alert>
+      )}
 
-        <div className="order-form-actions full-width">
-          <button className="primary-button" type="submit" disabled={saving}>
-            {saving ? 'Saving...' : 'Expedite receipt'}
-          </button>
-        </div>
-      </form>
-    </section>
+      <div className="form-actions span-2">
+        <Button onClick={close}>Cancel</Button>
+        <Button variant="primary" type="submit" loading={saving}>
+          Expedite receipt
+        </Button>
+      </div>
+    </form>
   );
 }
 

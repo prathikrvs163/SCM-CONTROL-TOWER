@@ -8,7 +8,7 @@ function AuditChanges({ entry }: { entry: AuditLogEntry }) {
   const changes = describeAuditChanges(entry);
 
   if (changes.length === 0) {
-    return <span className="muted-text">No field changes recorded.</span>;
+    return <span className="text-muted">No field changes recorded.</span>;
   }
 
   return (

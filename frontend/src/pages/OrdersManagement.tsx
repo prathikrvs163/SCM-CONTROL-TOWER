@@ -1,9 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { fetchSkus } from '../features/skus/skuSlice';
-import { fetchWarehouses } from '../features/warehouses/warehouseSlice';
+import { useSearchParams } from 'react-router-dom';
+import {
+  ArrowRight,
+  CalendarCog,
+  ChevronRight,
+  ClipboardList,
+  MapPin,
+  PackageCheck,
+  Pencil,
+  Plus,
+  RefreshCw,
+  ShieldAlert,
+  ShoppingCart,
+  Split,
+  Trash2,
+  Truck,
+} from 'lucide-react';
 
 import { useAppDispatch, useAppSelector } from '../app/hooks';
+import { useConfirm, useToast } from '../app/providers/contexts';
+import { fetchSkus } from '../features/skus/skuSlice';
+import { fetchWarehouses } from '../features/warehouses/warehouseSlice';
 import {
   clearOrderError,
   clearOrderTimeline,
@@ -20,7 +38,40 @@ import { formatAuditAction } from '../features/audit/auditFormat';
 import OrderPlannerPanel from '../features/planner/OrderPlannerPanel';
 import type { OrderPlannerAction } from '../features/planner/OrderPlannerPanel';
 
+import { Badge } from '../components/ui/Badge';
+import { Button } from '../components/ui/Button';
+import { Card } from '../components/ui/Card';
+import { PageHeader } from '../components/ui/PageHeader';
+import { StatCard } from '../components/ui/StatCard';
+import {
+  Field,
+  SearchInput,
+  SegmentedControl,
+} from '../components/ui/Form';
+import {
+  Alert,
+  EmptyState,
+  Meter,
+  Skeleton,
+  TableSkeleton,
+} from '../components/ui/Feedback';
+import { Drawer, Modal } from '../components/ui/Overlay';
+import {
+  OrderStatusBadge,
+  PriorityBadge,
+} from '../components/ui/StatusBadges';
+import { humanize, PRIORITY_LABEL } from '../components/ui/status';
+import { getOrderHealth, RISK_META } from '../utils/orderHealth';
+import type { OrderHealth, OrderRisk } from '../utils/orderHealth';
+import {
+  daysBetween,
+  formatDate,
+  formatDateTime,
+  pluralize,
+} from '../utils/format';
+
 import type {
+  AllocationOrder,
   CreateOrderInput,
   Order,
   OrderLineInput,
@@ -42,6 +93,16 @@ type OrderForm = {
   lines: OrderLineForm[];
 };
 
+type StatusFilter = 'ALL' | OrderStatus;
+type RiskFilter = 'ALL' | OrderRisk;
+type SortKey =
+  | 'newest'
+  | 'oldest'
+  | 'risk'
+  | 'promised'
+  | 'requested'
+  | 'priority';
+
 const emptyLine: OrderLineForm = {
   skuId: '',
   quantity: '1',
@@ -56,12 +117,6 @@ const emptyForm: OrderForm = {
   lines: [{ ...emptyLine }],
 };
 
-/** Orders the allocation engine plans for; promise and split actions apply. */
-const PLANNED_STATUSES: OrderStatus[] = ['CONFIRMED', 'FULFILLING'];
-
-/** Orders whose lines may still change fulfillment location. */
-const REASSIGNABLE_STATUSES: OrderStatus[] = ['DRAFT', ...PLANNED_STATUSES];
-
 const statusTransitions: Record<OrderStatus, OrderStatus[]> = {
   DRAFT: ['CONFIRMED', 'CANCELED'],
   CONFIRMED: ['FULFILLING', 'CANCELED'],
@@ -70,26 +125,74 @@ const statusTransitions: Record<OrderStatus, OrderStatus[]> = {
   CANCELED: [],
 };
 
-function formatDate(value: string | null | undefined): string {
-  if (!value) return '—';
+/** Orders the allocation engine plans for; promise and split actions apply. */
+const PLANNED_STATUSES: OrderStatus[] = ['CONFIRMED', 'FULFILLING'];
 
-  return new Date(value).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
+/** Orders whose lines may still change fulfillment location. */
+const REASSIGNABLE_STATUSES: OrderStatus[] = ['DRAFT', ...PLANNED_STATUSES];
+
+const STATUS_FILTERS: StatusFilter[] = [
+  'ALL',
+  'DRAFT',
+  'CONFIRMED',
+  'FULFILLING',
+  'SHIPPED',
+  'CANCELED',
+];
+
+const PRIORITY_RANK: Record<Priority, number> = { HIGH: 0, MED: 1, LOW: 2 };
+
+const SORT_LABELS: Record<SortKey, string> = {
+  newest: 'Newest first',
+  oldest: 'Oldest first',
+  risk: 'Highest risk',
+  promised: 'Earliest promise',
+  requested: 'Earliest requested ship',
+  priority: 'Priority',
+};
+
+const TRANSITION_LABEL: Partial<Record<OrderStatus, string>> = {
+  CONFIRMED: 'Confirm order',
+  FULFILLING: 'Start fulfilling',
+  SHIPPED: 'Ship order',
+  CANCELED: 'Cancel order',
+};
+
+function CoverageCell({ health }: { health: OrderHealth | null }) {
+  if (!health) {
+    return <span className="cell-muted">Not planned</span>;
+  }
+
+  return (
+    <div className="coverage-cell">
+      <Meter
+        value={health.allocated}
+        max={health.requested}
+        tone={health.backordered > 0 ? 'danger' : health.fromInbound > 0 ? 'accent' : 'success'}
+        label="Allocated quantity"
+      />
+      <span className="tabular">
+        {health.allocated}/{health.requested}
+      </span>
+    </div>
+  );
 }
 
-function formatDateTime(value: string): string {
-  return new Date(value).toLocaleString();
-}
-
-function getStatusClass(status: string): string {
-  return `order-status order-status-${status.toLowerCase()}`;
+function RiskBadge({ health }: { health: OrderHealth | null }) {
+  if (!health) return <span className="cell-muted">—</span>;
+  const meta = RISK_META[health.risk];
+  return (
+    <Badge tone={meta.tone} dot title={meta.description}>
+      {meta.label}
+    </Badge>
+  );
 }
 
 function OrdersManagement() {
   const dispatch = useAppDispatch();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const {
     items,
@@ -102,33 +205,36 @@ function OrdersManagement() {
     error,
   } = useAppSelector((state) => state.orders);
 
-  const skus = useAppSelector((state) =>
-    state.skus.items.filter((sku) => sku.isActive),
+  const allSkus = useAppSelector((state) => state.skus.items);
+  const allWarehouses = useAppSelector((state) => state.warehouses.items);
+  const skus = useMemo(() => allSkus.filter((sku) => sku.isActive), [allSkus]);
+  const warehouses = useMemo(
+    () => allWarehouses.filter((warehouse) => warehouse.isActive),
+    [allWarehouses],
   );
 
-  const warehouses = useAppSelector((state) =>
-    state.warehouses.items.filter((warehouse) => warehouse.isActive),
-  );
+  const { orderActivity, orderActivityId, orderActivityLoading } =
+    useAppSelector((state) => state.audit);
 
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('ALL');
-  const [priorityFilter, setPriorityFilter] = useState('ALL');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  const [priorityFilter, setPriorityFilter] = useState<'ALL' | Priority>('ALL');
+  const [riskFilter, setRiskFilter] = useState<RiskFilter>('ALL');
+  const [sortKey, setSortKey] = useState<SortKey>('newest');
 
   const [showForm, setShowForm] = useState(false);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [form, setForm] = useState<OrderForm>(emptyForm);
   const [formError, setFormError] = useState('');
-  const [successMessage, setSuccessMessage] = useState('');
 
-  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [plannerAction, setPlannerAction] =
     useState<OrderPlannerAction | null>(null);
 
-  const {
-    orderActivity,
-    orderActivityId,
-    orderActivityLoading,
-  } = useAppSelector((state) => state.audit);
+  // The open order and the create dialog live in the URL, so they can be
+  // linked to (from the dashboard, exceptions queue or command palette).
+  const selectedOrderId = searchParams.get('order');
+  const createRequested = searchParams.get('new') === '1';
+  const formOpen = showForm || createRequested;
 
   useEffect(() => {
     dispatch(fetchOrders());
@@ -137,10 +243,49 @@ function OrdersManagement() {
     dispatch(fetchWarehouses());
   }, [dispatch]);
 
+  useEffect(() => {
+    if (!selectedOrderId) return;
+
+    dispatch(clearOrderTimeline());
+    dispatch(clearOrderError());
+    dispatch(fetchOrderTimeline(selectedOrderId));
+    dispatch(fetchAllocationPlan());
+    dispatch(fetchOrderActivity(selectedOrderId));
+  }, [dispatch, selectedOrderId]);
+
+  const planByOrderId = useMemo(() => {
+    const map = new Map<string, AllocationOrder>();
+    for (const planOrder of allocationPlan?.orders ?? []) {
+      map.set(planOrder.orderId, planOrder);
+    }
+    return map;
+  }, [allocationPlan]);
+
+  const healthByOrderId = useMemo(() => {
+    const map = new Map<string, OrderHealth | null>();
+    for (const order of items) {
+      map.set(order.id, getOrderHealth(planByOrderId.get(order.id)));
+    }
+    return map;
+  }, [items, planByOrderId]);
+
+  const statusCounts = useMemo(() => {
+    const counts: Record<StatusFilter, number> = {
+      ALL: items.length,
+      DRAFT: 0,
+      CONFIRMED: 0,
+      FULFILLING: 0,
+      SHIPPED: 0,
+      CANCELED: 0,
+    };
+    for (const order of items) counts[order.status] += 1;
+    return counts;
+  }, [items]);
+
   const filteredOrders = useMemo(() => {
     const term = search.trim().toLowerCase();
 
-    return items.filter((order) => {
+    const result = items.filter((order) => {
       const matchesSearch =
         !term ||
         order.orderNumber.toLowerCase().includes(term) ||
@@ -152,23 +297,102 @@ function OrdersManagement() {
       const matchesPriority =
         priorityFilter === 'ALL' || order.priority === priorityFilter;
 
-      return matchesSearch && matchesStatus && matchesPriority;
-    });
-  }, [items, search, statusFilter, priorityFilter]);
+      const health = healthByOrderId.get(order.id);
+      const matchesRisk =
+        riskFilter === 'ALL' || (health && health.risk === riskFilter);
 
-  const selectedAllocation = useMemo(
-    () =>
-      allocationPlan?.orders.find(
-        (order) => order.orderId === selectedOrder?.id,
-      ) ?? null,
-    [allocationPlan, selectedOrder],
+      return matchesSearch && matchesStatus && matchesPriority && matchesRisk;
+    });
+
+    const riskRank = (order: Order) => {
+      const health = healthByOrderId.get(order.id);
+      return health ? RISK_META[health.risk].rank : 9;
+    };
+
+    const dateValue = (value: string | null | undefined) =>
+      value ? new Date(value).getTime() : Number.POSITIVE_INFINITY;
+
+    return [...result].sort((a, b) => {
+      switch (sortKey) {
+        case 'oldest':
+          return a.createdAt.localeCompare(b.createdAt);
+        case 'risk':
+          return (
+            riskRank(a) - riskRank(b) ||
+            PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
+          );
+        case 'promised':
+          return (
+            dateValue(healthByOrderId.get(a.id)?.promisedShipDate) -
+            dateValue(healthByOrderId.get(b.id)?.promisedShipDate)
+          );
+        case 'requested':
+          return (
+            dateValue(a.requestedShipDate) - dateValue(b.requestedShipDate)
+          );
+        case 'priority':
+          return (
+            PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
+            a.createdAt.localeCompare(b.createdAt)
+          );
+        default:
+          return b.createdAt.localeCompare(a.createdAt);
+      }
+    });
+  }, [
+    items,
+    search,
+    statusFilter,
+    priorityFilter,
+    riskFilter,
+    sortKey,
+    healthByOrderId,
+  ]);
+
+  const selectedOrder = useMemo(
+    () => items.find((order) => order.id === selectedOrderId) ?? null,
+    [items, selectedOrderId],
   );
+
+  const selectedAllocation = selectedOrder
+    ? (planByOrderId.get(selectedOrder.id) ?? null)
+    : null;
+  const selectedHealth = selectedOrder
+    ? (healthByOrderId.get(selectedOrder.id) ?? null)
+    : null;
+
+  const atRiskCount = [...healthByOrderId.values()].filter(
+    (health) => health && (health.risk === 'SHORT' || health.risk === 'LATE'),
+  ).length;
+
+  const filtersActive =
+    Boolean(search) ||
+    statusFilter !== 'ALL' ||
+    priorityFilter !== 'ALL' ||
+    riskFilter !== 'ALL';
+
+  function updateParams(update: (params: URLSearchParams) => void) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      update(next);
+      return next;
+    });
+  }
+
+  function openOrderDetails(order: Order) {
+    setPlannerAction(null);
+    updateParams((params) => params.set('order', order.id));
+  }
+
+  function closeOrderDetails() {
+    setPlannerAction(null);
+    updateParams((params) => params.delete('order'));
+  }
 
   function openCreateForm() {
     setEditingOrder(null);
     setForm(emptyForm);
     setFormError('');
-    setSuccessMessage('');
     dispatch(clearOrderError());
     setShowForm(true);
   }
@@ -191,9 +415,16 @@ function OrdersManagement() {
       })),
     });
     setFormError('');
-    setSuccessMessage('');
     dispatch(clearOrderError());
     setShowForm(true);
+  }
+
+  function closeForm() {
+    setShowForm(false);
+    setEditingOrder(null);
+    setForm(emptyForm);
+    setFormError('');
+    if (createRequested) updateParams((params) => params.delete('new'));
   }
 
   function updateFormField<K extends keyof OrderForm>(
@@ -233,7 +464,6 @@ function OrdersManagement() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setFormError('');
-    setSuccessMessage('');
 
     if (!editingOrder && form.orderNumber.trim().length < 3) {
       setFormError('Order number must contain at least 3 characters.');
@@ -290,7 +520,7 @@ function OrdersManagement() {
           }),
         ).unwrap();
 
-        setSuccessMessage('Order updated successfully.');
+        toast({ title: 'Order updated', description: editingOrder.orderNumber });
       } else {
         const payload: CreateOrderInput = {
           orderNumber: form.orderNumber.trim(),
@@ -301,34 +531,23 @@ function OrdersManagement() {
         };
 
         await dispatch(createOrder(payload)).unwrap();
-        setSuccessMessage('Order created successfully.');
+        toast({
+          title: 'Order created',
+          description: `${payload.orderNumber} was saved as a draft.`,
+        });
       }
 
-      setShowForm(false);
+      closeForm();
       await dispatch(fetchOrders());
       await dispatch(fetchAllocationPlan());
     } catch {
-      setFormError('The order could not be saved. Check the API error below.');
+      setFormError('The order could not be saved. Check the error above.');
     }
-  }
-
-  async function openOrderDetails(order: Order) {
-    setSelectedOrder(order);
-    setPlannerAction(null);
-    dispatch(clearOrderTimeline());
-    dispatch(clearOrderError());
-
-    await Promise.all([
-      dispatch(fetchOrderTimeline(order.id)),
-      dispatch(fetchAllocationPlan()),
-      dispatch(fetchOrderActivity(order.id)),
-    ]);
   }
 
   async function handlePlannerCompleted(message: string, updated: Order) {
     setPlannerAction(null);
-    setSelectedOrder(updated);
-    setSuccessMessage(message);
+    toast({ title: 'Planner action applied', description: message });
 
     await Promise.all([
       dispatch(fetchOrders()),
@@ -338,36 +557,46 @@ function OrdersManagement() {
     ]);
   }
 
-  async function handleStatusChange(
-    order: Order,
-    nextStatus: OrderStatus,
-  ) {
-    const message =
+  async function handleStatusChange(order: Order, nextStatus: OrderStatus) {
+    const confirmed = await confirm(
       nextStatus === 'SHIPPED'
-        ? `Ship ${order.orderNumber}?\n\nThis action deducts allocated on-hand stock and cannot be reversed.`
-        : `Change ${order.orderNumber} from ${order.status} to ${nextStatus}?`;
+        ? {
+            title: `Ship ${order.orderNumber}?`,
+            description:
+              'This deducts the allocated on-hand stock and cannot be reversed.',
+            confirmLabel: 'Ship order',
+            tone: 'danger',
+          }
+        : nextStatus === 'CANCELED'
+          ? {
+              title: `Cancel ${order.orderNumber}?`,
+              description:
+                'The order leaves the allocation plan and its supply returns to ATP. This cannot be undone.',
+              confirmLabel: 'Cancel order',
+              tone: 'danger',
+            }
+          : {
+              title: `Move ${order.orderNumber} to ${humanize(nextStatus).toLowerCase()}?`,
+              description: `The order changes from ${humanize(order.status).toLowerCase()} to ${humanize(nextStatus).toLowerCase()}.`,
+              confirmLabel: TRANSITION_LABEL[nextStatus] ?? 'Confirm',
+            },
+    );
 
-    if (!window.confirm(message)) return;
+    if (!confirmed) return;
 
-    setSuccessMessage('');
     dispatch(clearOrderError());
 
     try {
-      const updated = await dispatch(
+      await dispatch(
         updateOrderStatus({
           id: order.id,
-          status: nextStatus as
-            | 'CONFIRMED'
-            | 'FULFILLING'
-            | 'SHIPPED'
-            | 'CANCELED',
+          status: nextStatus as 'CONFIRMED' | 'FULFILLING' | 'SHIPPED' | 'CANCELED',
         }),
       ).unwrap();
 
-      setSelectedOrder(updated);
-      setSuccessMessage(
-        `${order.orderNumber} status changed to ${nextStatus}.`,
-      );
+      toast({
+        title: `${order.orderNumber} is now ${humanize(nextStatus).toLowerCase()}`,
+      });
 
       await Promise.all([
         dispatch(fetchOrders()),
@@ -376,546 +605,277 @@ function OrdersManagement() {
         dispatch(fetchOrderActivity(order.id)),
       ]);
     } catch {
-      // The Redux slice retains the backend error message.
+      // The Redux slice keeps the backend error message for the panel.
     }
   }
 
-  const totalOrders = items.length;
-  const draftOrders = items.filter((order) => order.status === 'DRAFT').length;
-  const activeOrders = items.filter(
-    (order) => ['CONFIRMED', 'FULFILLING'].includes(order.status),
-  ).length;
-  const highPriorityOrders = items.filter(
-    (order) => order.priority === 'HIGH' &&
-      !['SHIPPED', 'CANCELED'].includes(order.status),
-  ).length;
+  const splitFromNumber = selectedOrder?.splitFromOrderId
+    ? items.find((order) => order.id === selectedOrder.splitFromOrderId)
+        ?.orderNumber
+    : null;
 
   return (
-    <div className="page-container orders-page">
-      <div className="page-header">
-        <div>
-          <p className="page-eyebrow">ORDER OPERATIONS</p>
-          <h1>Orders Management</h1>
-          <p>Manage customer orders, fulfillment allocation and order progress.</p>
-        </div>
-
-        <button className="primary-button" onClick={openCreateForm}>
-          + Create Order
-        </button>
-      </div>
-
-      <div className="order-stat-grid">
-        <div className="order-stat-card">
-          <span>Total orders</span>
-          <strong>{totalOrders}</strong>
-        </div>
-        <div className="order-stat-card">
-          <span>Draft orders</span>
-          <strong>{draftOrders}</strong>
-        </div>
-        <div className="order-stat-card">
-          <span>Active fulfillment</span>
-          <strong>{activeOrders}</strong>
-        </div>
-        <div className="order-stat-card">
-          <span>Open high priority</span>
-          <strong>{highPriorityOrders}</strong>
-        </div>
-      </div>
-
-      {successMessage && (
-        <div className="order-success-message">{successMessage}</div>
-      )}
-
-      {error && <div className="form-error">{error}</div>}
-
-      {showForm && (
-        <section className="sku-form-panel order-form-panel">
-          <div className="order-section-heading">
-            <div>
-              <h2>{editingOrder ? 'Edit Draft Order' : 'Create Order'}</h2>
-              <p>
-                {editingOrder
-                  ? 'Only draft orders can be edited.'
-                  : 'Create an order with one or more SKU lines.'}
-              </p>
-            </div>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => setShowForm(false)}
+    <div className="page">
+      <PageHeader
+        eyebrow="Operations"
+        eyebrowIcon={<ShoppingCart />}
+        title="Orders"
+        description="Customer demand, its allocation plan and promise dates. Open an order to see its line-level plan and take planner actions."
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              icon={<RefreshCw />}
+              loading={loading || planLoading}
+              onClick={() => {
+                dispatch(fetchOrders());
+                dispatch(fetchAllocationPlan());
+              }}
             >
-              Close
-            </button>
-          </div>
+              Refresh
+            </Button>
+            <Button variant="primary" icon={<Plus />} onClick={openCreateForm}>
+              New order
+            </Button>
+          </>
+        }
+      />
 
-          <form className="sku-form order-form" onSubmit={handleSubmit}>
-            {!editingOrder && (
-              <label>
-                Order number *
-                <input
-                  value={form.orderNumber}
-                  onChange={(event) =>
-                    updateFormField('orderNumber', event.target.value)
-                  }
-                  minLength={3}
-                  maxLength={100}
-                  required
-                  placeholder="e.g. SCM-ORD-001"
-                />
-              </label>
-            )}
+      <div className="stat-grid">
+        <StatCard index={0} label="Total orders" value={items.length} icon={<ClipboardList />} />
+        <StatCard
+          index={1}
+          label="Drafts"
+          value={statusCounts.DRAFT}
+          icon={<Pencil />}
+          hint="Not yet in the allocation plan"
+          onClick={() => setStatusFilter('DRAFT')}
+          active={statusFilter === 'DRAFT'}
+        />
+        <StatCard
+          index={2}
+          label="In fulfillment"
+          value={statusCounts.CONFIRMED + statusCounts.FULFILLING}
+          icon={<Truck />}
+          tone="accent"
+          hint={`${statusCounts.CONFIRMED} confirmed · ${statusCounts.FULFILLING} fulfilling`}
+        />
+        <StatCard
+          index={3}
+          label="At risk"
+          value={atRiskCount}
+          icon={<ShieldAlert />}
+          tone={atRiskCount > 0 ? 'danger' : 'success'}
+          hint="Short or late against the plan"
+          onClick={() => {
+            setRiskFilter(riskFilter === 'SHORT' ? 'ALL' : 'SHORT');
+            setSortKey('risk');
+          }}
+          active={riskFilter === 'SHORT'}
+        />
+        <StatCard
+          index={4}
+          label="Shipped"
+          value={statusCounts.SHIPPED}
+          icon={<PackageCheck />}
+          tone="success"
+        />
+      </div>
 
-            <label>
-              Customer name *
-              <input
-                value={form.customerName}
-                onChange={(event) =>
-                  updateFormField('customerName', event.target.value)
-                }
-                minLength={2}
-                maxLength={150}
-                required
-                placeholder="Customer name"
-              />
-            </label>
-
-            <label>
-              Priority
-              <select
-                value={form.priority}
-                onChange={(event) =>
-                  updateFormField('priority', event.target.value as Priority)
-                }
-              >
-                <option value="LOW">Low</option>
-                <option value="MED">Medium</option>
-                <option value="HIGH">High</option>
-              </select>
-            </label>
-
-            <label>
-              Requested ship date
-              <input
-                type="date"
-                value={form.requestedShipDate}
-                onChange={(event) =>
-                  updateFormField('requestedShipDate', event.target.value)
-                }
-              />
-            </label>
-
-            <div className="order-lines-editor">
-              <div className="order-section-heading">
-                <div>
-                  <h3>Order lines</h3>
-                  <p>Choose a SKU, quantity and optional preferred warehouse.</p>
-                </div>
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={addLine}
-                >
-                  + Add line
-                </button>
-              </div>
-
-              {form.lines.map((line, index) => (
-                <div className="order-line-editor" key={index}>
-                  <label>
-                    SKU *
-                    <select
-                      value={line.skuId}
-                      onChange={(event) =>
-                        updateLine(index, 'skuId', event.target.value)
-                      }
-                      required
-                    >
-                      <option value="">Select SKU</option>
-                      {skus.map((sku) => (
-                        <option value={sku.id} key={sku.id}>
-                          {sku.skuCode} — {sku.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label>
-                    Quantity *
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={line.quantity}
-                      onChange={(event) =>
-                        updateLine(index, 'quantity', event.target.value)
-                      }
-                      required
-                    />
-                  </label>
-
-                  <label>
-                    Preferred warehouse
-                    <select
-                      value={line.preferredWarehouseId}
-                      onChange={(event) =>
-                        updateLine(
-                          index,
-                          'preferredWarehouseId',
-                          event.target.value,
-                        )
-                      }
-                    >
-                      <option value="">No preference</option>
-                      {warehouses.map((warehouse) => (
-                        <option value={warehouse.id} key={warehouse.id}>
-                          {warehouse.code} — {warehouse.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <button
-                    className="text-danger-button"
-                    type="button"
-                    disabled={form.lines.length === 1}
-                    onClick={() => removeLine(index)}
-                    aria-label={`Remove line ${index + 1}`}
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            {formError && <div className="form-error">{formError}</div>}
-
-            <div className="order-form-actions">
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => setShowForm(false)}
-              >
-                Cancel
-              </button>
-              <button className="primary-button" type="submit" disabled={saving}>
-                {saving
-                  ? 'Saving...'
-                  : editingOrder
-                    ? 'Save Changes'
-                    : 'Create Order'}
-              </button>
-            </div>
-          </form>
-        </section>
+      {error && !selectedOrder && !formOpen && (
+        <Alert tone="danger" title="Something went wrong">
+          {error}
+        </Alert>
       )}
 
-      <section className="sku-table-panel">
-        <div className="order-section-heading">
-          <div>
-            <h2>Customer orders</h2>
-            <p>{filteredOrders.length} orders shown</p>
-          </div>
-          <button
-            className="secondary-button"
-            onClick={() => {
-              dispatch(fetchOrders());
-              dispatch(fetchAllocationPlan());
-            }}
-          >
-            Refresh
-          </button>
-        </div>
-
-        <div className="sku-toolbar order-toolbar">
-          <input
+      <Card>
+        <div className="toolbar">
+          <SearchInput
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={setSearch}
             placeholder="Search order number or customer..."
           />
-
           <select
-            value={statusFilter}
-            onChange={(event) => setStatusFilter(event.target.value)}
-          >
-            <option value="ALL">All statuses</option>
-            <option value="DRAFT">Draft</option>
-            <option value="CONFIRMED">Confirmed</option>
-            <option value="FULFILLING">Fulfilling</option>
-            <option value="SHIPPED">Shipped</option>
-            <option value="CANCELED">Canceled</option>
-          </select>
-
-          <select
+            className="select select-sm"
+            style={{ width: 'auto' }}
             value={priorityFilter}
-            onChange={(event) => setPriorityFilter(event.target.value)}
+            onChange={(event) =>
+              setPriorityFilter(event.target.value as 'ALL' | Priority)
+            }
+            aria-label="Filter by priority"
           >
             <option value="ALL">All priorities</option>
-            <option value="HIGH">High</option>
-            <option value="MED">Medium</option>
-            <option value="LOW">Low</option>
+            <option value="HIGH">High priority</option>
+            <option value="MED">Medium priority</option>
+            <option value="LOW">Low priority</option>
+          </select>
+          <select
+            className="select select-sm"
+            style={{ width: 'auto' }}
+            value={riskFilter}
+            onChange={(event) => setRiskFilter(event.target.value as RiskFilter)}
+            aria-label="Filter by risk"
+          >
+            <option value="ALL">Any risk</option>
+            {(Object.keys(RISK_META) as OrderRisk[]).map((risk) => (
+              <option key={risk} value={risk}>
+                {RISK_META[risk].label}
+              </option>
+            ))}
+          </select>
+          <div className="toolbar-spacer" />
+          <select
+            className="select select-sm"
+            style={{ width: 'auto' }}
+            value={sortKey}
+            onChange={(event) => setSortKey(event.target.value as SortKey)}
+            aria-label="Sort orders"
+          >
+            {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => (
+              <option key={key} value={key}>
+                Sort: {SORT_LABELS[key]}
+              </option>
+            ))}
           </select>
         </div>
+        <div className="toolbar">
+          <SegmentedControl
+            label="Filter by status"
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={STATUS_FILTERS.map((status) => ({
+              value: status,
+              label: status === 'ALL' ? 'All' : humanize(status),
+              count: statusCounts[status],
+            }))}
+          />
+          <div className="toolbar-spacer" />
+          {filtersActive && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSearch('');
+                setStatusFilter('ALL');
+                setPriorityFilter('ALL');
+                setRiskFilter('ALL');
+              }}
+            >
+              Clear filters
+            </Button>
+          )}
+        </div>
 
-        {loading ? (
-          <div className="empty-state">Loading orders...</div>
+        {loading && items.length === 0 ? (
+          <TableSkeleton rows={8} columns={7} />
         ) : filteredOrders.length === 0 ? (
-          <div className="empty-state">No orders match your filters.</div>
+          <EmptyState
+            icon={<ShoppingCart />}
+            title={items.length === 0 ? 'No orders yet' : 'No orders match'}
+            description={
+              items.length === 0
+                ? 'Create the first customer order to start planning.'
+                : 'Try a different search or clear the filters.'
+            }
+            action={
+              items.length === 0 ? (
+                <Button variant="primary" icon={<Plus />} onClick={openCreateForm}>
+                  New order
+                </Button>
+              ) : undefined
+            }
+          />
         ) : (
-          <div className="table-responsive">
-            <table className="sku-table order-table">
+          <div className="table-wrap">
+            <table className="table">
               <thead>
                 <tr>
                   <th>Order</th>
-                  <th>Customer</th>
                   <th>Priority</th>
-                  <th>Requested ship</th>
-                  <th>Lines</th>
                   <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredOrders.map((order) => (
-                  <tr key={order.id}>
-                    <td>
-                      <strong>{order.orderNumber}</strong>
-                    </td>
-                    <td>{order.customerName}</td>
-                    <td>
-                      <span className={`priority-label priority-${order.priority.toLowerCase()}`}>
-                        {order.priority}
-                      </span>
-                    </td>
-                    <td>{formatDate(order.requestedShipDate)}</td>
-                    <td>{order.lines.length}</td>
-                    <td>
-                      <span className={getStatusClass(order.status)}>
-                        {order.status}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="order-row-actions">
-                        <button
-                          className="table-action"
-                          onClick={() => openOrderDetails(order)}
-                        >
-                          Details
-                        </button>
-                        {order.status === 'DRAFT' && (
-                          <button
-                            className="table-action"
-                            onClick={() => openEditForm(order)}
-                          >
-                            Edit
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      {selectedOrder && (
-        <section className="sku-table-panel order-detail-panel">
-          <div className="order-section-heading">
-            <div>
-              <p className="page-eyebrow">ORDER DETAILS</p>
-              <h2>{selectedOrder.orderNumber}</h2>
-              <p>
-                {selectedOrder.customerName} · {selectedOrder.priority} priority
-              </p>
-            </div>
-            <button
-              className="secondary-button"
-              onClick={() => {
-                setSelectedOrder(null);
-                setPlannerAction(null);
-              }}
-            >
-              Close details
-            </button>
-          </div>
-
-          <div className="order-detail-summary">
-            <div>
-              <span>Status</span>
-              <strong>
-                <span className={getStatusClass(selectedOrder.status)}>
-                  {selectedOrder.status}
-                </span>
-              </strong>
-            </div>
-            <div>
-              <span>Requested ship date</span>
-              <strong>{formatDate(selectedOrder.requestedShipDate)}</strong>
-            </div>
-            <div>
-              <span>Created</span>
-              <strong>{formatDate(selectedOrder.createdAt)}</strong>
-            </div>
-            <div>
-              <span>Order lines</span>
-              <strong>{selectedOrder.lines.length}</strong>
-            </div>
-          </div>
-
-          {selectedOrder.splitFromOrderId && (
-            <p className="muted-text">
-              Split from{' '}
-              <strong>
-                {items.find(
-                  (order) => order.id === selectedOrder.splitFromOrderId,
-                )?.orderNumber ?? 'another order'}
-              </strong>
-              .
-            </p>
-          )}
-
-          <div className="order-status-actions">
-            <strong>Available actions</strong>
-            {statusTransitions[selectedOrder.status].length === 0 ? (
-              <span className="muted-text">No further status transitions.</span>
-            ) : (
-              statusTransitions[selectedOrder.status].map((nextStatus) => (
-                <button
-                  key={nextStatus}
-                  className={
-                    nextStatus === 'CANCELED'
-                      ? 'danger-button'
-                      : 'secondary-button'
-                  }
-                  disabled={saving}
-                  onClick={() => handleStatusChange(selectedOrder, nextStatus)}
-                >
-                  {nextStatus === 'SHIPPED'
-                    ? 'Confirm Shipment'
-                    : nextStatus === 'CANCELED'
-                      ? 'Cancel Order'
-                      : `Mark ${nextStatus}`}
-                </button>
-              ))
-            )}
-
-            {PLANNED_STATUSES.includes(selectedOrder.status) &&
-              selectedOrder.lines.reduce(
-                (sum, line) => sum + line.quantity,
-                0,
-              ) > 1 && (
-                <button
-                  className="secondary-button"
-                  onClick={() => setPlannerAction({ kind: 'split' })}
-                >
-                  Split shipment
-                </button>
-              )}
-          </div>
-
-          {plannerAction && (
-            <OrderPlannerPanel
-              key={
-                plannerAction.kind === 'split'
-                  ? 'split'
-                  : `${plannerAction.kind}-${plannerAction.orderLineId}`
-              }
-              order={selectedOrder}
-              planOrder={selectedAllocation}
-              warehouses={warehouses}
-              action={plannerAction}
-              onClose={() => setPlannerAction(null)}
-              onCompleted={handlePlannerCompleted}
-            />
-          )}
-
-          <h3>Order lines and fulfillment plan</h3>
-          <div className="table-responsive">
-            <table className="sku-table order-table">
-              <thead>
-                <tr>
-                  <th>SKU</th>
                   <th>Requested</th>
-                  <th>Allocated</th>
-                  <th>Backordered</th>
-                  <th>Promised ship</th>
-                  <th>Promise reason</th>
-                  <th>Planner actions</th>
+                  <th>Promised</th>
+                  <th>Coverage</th>
+                  <th>Risk</th>
+                  <th className="actions-cell">
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {selectedOrder.lines.map((line) => {
-                  const planLine = selectedAllocation?.lines.find(
-                    (item) => item.orderLineId === line.id,
-                  );
+                {filteredOrders.map((order) => {
+                  const health = healthByOrderId.get(order.id) ?? null;
+                  const lateBy =
+                    health?.promisedShipDate && order.requestedShipDate
+                      ? daysBetween(order.requestedShipDate, health.promisedShipDate)
+                      : 0;
 
                   return (
-                    <tr key={line.id}>
+                    <tr
+                      key={order.id}
+                      className={`is-clickable${order.id === selectedOrderId ? ' is-selected' : ''}`}
+                      onClick={() => openOrderDetails(order)}
+                    >
                       <td>
-                        <strong>{line.sku.skuCode}</strong>
-                        <span className="table-subtext">{line.sku.name}</span>
-                        <span className="table-subtext">
-                          Ships from:{' '}
-                          {line.preferredWarehouse?.code ?? 'any warehouse'}
+                        <span className="cell-primary">{order.orderNumber}</span>
+                        <span className="cell-secondary">
+                          {order.customerName} · {pluralize(order.lines.length, 'line')}
                         </span>
                       </td>
-                      <td>{line.quantity}</td>
-                      <td>{planLine?.allocatedQuantity ?? '—'}</td>
-                      <td>{planLine?.backorderedQuantity ?? '—'}</td>
                       <td>
-                        {formatDate(planLine?.promisedShipDate)}
-                        {planLine?.isLate && (
-                          <span className="order-late-label">Late</span>
-                        )}
-                        {planLine?.promiseOverridden && (
-                          <>
-                            <span className="order-override-label">
-                              Override
-                            </span>
-                            <span className="table-subtext">
-                              Computed:{' '}
-                              {formatDate(planLine.computedPromisedShipDate)}
-                            </span>
-                          </>
+                        <PriorityBadge priority={order.priority} />
+                      </td>
+                      <td>
+                        <OrderStatusBadge status={order.status} />
+                      </td>
+                      <td className="tabular">{formatDate(order.requestedShipDate)}</td>
+                      <td className="tabular">
+                        {health ? (
+                          health.promisedShipDate ? (
+                            <>
+                              {formatDate(health.promisedShipDate)}
+                              {lateBy > 0 && (
+                                <span className="cell-secondary text-danger">
+                                  {lateBy}d late
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-danger">No promise</span>
+                          )
+                        ) : (
+                          <span className="cell-muted">—</span>
                         )}
                       </td>
-                      <td>{planLine?.promiseReason ?? 'Plan unavailable'}</td>
+                      <td style={{ minWidth: 150 }}>
+                        <CoverageCell health={health} />
+                      </td>
                       <td>
-                        <div className="order-row-actions">
-                          {REASSIGNABLE_STATUSES.includes(
-                            selectedOrder.status,
-                          ) && (
-                            <button
-                              className="table-action"
-                              onClick={() =>
-                                setPlannerAction({
-                                  kind: 'reassign',
-                                  orderLineId: line.id,
-                                })
-                              }
-                            >
-                              Reassign
-                            </button>
-                          )}
-                          {PLANNED_STATUSES.includes(selectedOrder.status) && (
-                            <button
-                              className="table-action"
-                              onClick={() =>
-                                setPlannerAction({
-                                  kind: 'override',
-                                  orderLineId: line.id,
-                                })
-                              }
-                            >
-                              Override promise
-                            </button>
-                          )}
-                          {!REASSIGNABLE_STATUSES.includes(
-                            selectedOrder.status,
-                          ) && <span className="muted-text">—</span>}
-                        </div>
+                        <RiskBadge health={health} />
+                      </td>
+                      <td className="actions-cell">
+                        {order.status === 'DRAFT' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            icon={<Pencil />}
+                            aria-label={`Edit ${order.orderNumber}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openEditForm(order);
+                            }}
+                          />
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={<ChevronRight />}
+                          aria-label={`Open ${order.orderNumber}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openOrderDetails(order);
+                          }}
+                        />
                       </td>
                     </tr>
                   );
@@ -923,93 +883,556 @@ function OrdersManagement() {
               </tbody>
             </table>
           </div>
+        )}
 
-          <h3>Allocation sources</h3>
-          {planLoading ? (
-            <p className="muted-text">Refreshing allocation plan...</p>
-          ) : selectedAllocation ? (
-            <div className="order-allocation-list">
-              {selectedAllocation.lines.map((line) => (
-                <div className="order-allocation-item" key={line.orderLineId}>
-                  <strong>{line.skuCode}</strong>
-                  {line.allocations.length === 0 ? (
-                    <span className="muted-text">No supply allocated.</span>
-                  ) : (
-                    line.allocations.map((allocation, index) => (
-                      <span key={`${line.orderLineId}-${index}`}>
-                        {allocation.warehouseCode}: {allocation.quantity} units
-                        {' · '}
-                        {allocation.source === 'ON_HAND'
-                          ? 'On-hand stock'
-                          : `Inbound ${allocation.receiptId ?? ''}`}
-                        {allocation.expectedArrivalTime
-                          ? ` · ETA ${formatDate(allocation.expectedArrivalTime)}`
-                          : ''}
-                      </span>
-                    ))
-                  )}
-                </div>
-              ))}
+        <div className="table-footer">
+          <span>
+            Showing {filteredOrders.length} of {items.length} orders
+          </span>
+          <span>Sorted by {SORT_LABELS[sortKey].toLowerCase()}</span>
+        </div>
+      </Card>
+
+      {/* Order details */}
+      <Drawer
+        open={Boolean(selectedOrderId)}
+        onClose={closeOrderDetails}
+        label={selectedOrder ? `Order ${selectedOrder.orderNumber}` : 'Order details'}
+        title={
+          selectedOrder ? (
+            <div className="drawer-title-row">
+              <h2 className="drawer-title">{selectedOrder.orderNumber}</h2>
+              <OrderStatusBadge status={selectedOrder.status} />
+              <PriorityBadge priority={selectedOrder.priority} />
             </div>
           ) : (
-            <p className="muted-text">
-              This order is not present in the current allocation plan.
-            </p>
+            <h2 className="drawer-title">Order details</h2>
+          )
+        }
+        subtitle={
+          selectedOrder
+            ? `${selectedOrder.customerName} · created ${formatDateTime(selectedOrder.createdAt)}`
+            : undefined
+        }
+      >
+        {!selectedOrder ? (
+          loading ? (
+            <div style={{ display: 'grid', gap: 12 }}>
+              <Skeleton height={60} />
+              <Skeleton height={160} />
+            </div>
+          ) : (
+            <EmptyState
+              title="Order not found"
+              description="It may have been removed, or the link is out of date."
+            />
+          )
+        ) : (
+          <div className="order-detail">
+            {error && (
+              <Alert tone="danger" title="Action failed">
+                {error}
+              </Alert>
+            )}
+
+            <div className="order-actions-bar">
+              {statusTransitions[selectedOrder.status].length === 0 ? (
+                <span className="text-muted">
+                  This order is {humanize(selectedOrder.status).toLowerCase()}.
+                  No further status changes are possible.
+                </span>
+              ) : (
+                statusTransitions[selectedOrder.status].map((nextStatus) => (
+                  <Button
+                    key={nextStatus}
+                    variant={
+                      nextStatus === 'CANCELED'
+                        ? 'danger-ghost'
+                        : nextStatus === 'SHIPPED'
+                          ? 'primary'
+                          : 'secondary'
+                    }
+                    size="sm"
+                    icon={nextStatus === 'CANCELED' ? <Trash2 /> : <ArrowRight />}
+                    disabled={saving}
+                    onClick={() => handleStatusChange(selectedOrder, nextStatus)}
+                  >
+                    {TRANSITION_LABEL[nextStatus]}
+                  </Button>
+                ))
+              )}
+
+              {PLANNED_STATUSES.includes(selectedOrder.status) &&
+                selectedOrder.lines.reduce((sum, line) => sum + line.quantity, 0) > 1 && (
+                  <Button
+                    size="sm"
+                    icon={<Split />}
+                    onClick={() => setPlannerAction({ kind: 'split' })}
+                  >
+                    Split shipment
+                  </Button>
+                )}
+
+              {selectedOrder.status === 'DRAFT' && (
+                <Button
+                  size="sm"
+                  icon={<Pencil />}
+                  onClick={() => openEditForm(selectedOrder)}
+                >
+                  Edit draft
+                </Button>
+              )}
+            </div>
+
+            <dl className="definition-grid">
+              <div className="definition-item">
+                <dt>Requested ship</dt>
+                <dd>{formatDate(selectedOrder.requestedShipDate)}</dd>
+              </div>
+              <div className="definition-item">
+                <dt>Promised ship</dt>
+                <dd>
+                  {selectedHealth
+                    ? selectedHealth.promisedShipDate
+                      ? formatDate(selectedHealth.promisedShipDate)
+                      : 'No promise yet'
+                    : 'Not planned'}
+                </dd>
+              </div>
+              <div className="definition-item">
+                <dt>Coverage</dt>
+                <dd>
+                  {selectedHealth
+                    ? `${selectedHealth.allocated} of ${selectedHealth.requested} units`
+                    : '—'}
+                </dd>
+              </div>
+              <div className="definition-item">
+                <dt>Risk</dt>
+                <dd>
+                  <RiskBadge health={selectedHealth} />
+                </dd>
+              </div>
+            </dl>
+
+            {selectedOrder.splitFromOrderId && (
+              <Alert tone="info">
+                Split from <strong>{splitFromNumber ?? 'another order'}</strong>
+                . It keeps the original order&apos;s place in the allocation
+                queue.
+              </Alert>
+            )}
+
+            {plannerAction && (
+              <OrderPlannerPanel
+                key={
+                  plannerAction.kind === 'split'
+                    ? 'split'
+                    : `${plannerAction.kind}-${plannerAction.orderLineId}`
+                }
+                order={selectedOrder}
+                planOrder={selectedAllocation}
+                warehouses={warehouses}
+                action={plannerAction}
+                onClose={() => setPlannerAction(null)}
+                onCompleted={handlePlannerCompleted}
+              />
+            )}
+
+            <div className="section-title">
+              <div>
+                <h3>Lines and fulfillment plan</h3>
+                <p>
+                  {selectedAllocation
+                    ? 'Live plan, recalculated from current supply.'
+                    : 'Confirm the order to include it in the allocation plan.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="plan-lines">
+              {selectedOrder.lines.map((line) => {
+                const planLine = selectedAllocation?.lines.find(
+                  (item) => item.orderLineId === line.id,
+                );
+
+                return (
+                  <div className="plan-line" key={line.id}>
+                    <div className="plan-line-head">
+                      <div>
+                        <span className="cell-primary">
+                          {line.sku.skuCode}{' '}
+                          <span className="text-muted" style={{ fontWeight: 400 }}>
+                            {line.sku.name}
+                          </span>
+                        </span>
+                        <span className="cell-secondary icon-inline">
+                          <MapPin />
+                          Ships from{' '}
+                          {line.preferredWarehouse?.code ?? 'any warehouse'}
+                        </span>
+                      </div>
+                      <div className="btn-group">
+                        {REASSIGNABLE_STATUSES.includes(selectedOrder.status) && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            icon={<MapPin />}
+                            onClick={() =>
+                              setPlannerAction({
+                                kind: 'reassign',
+                                orderLineId: line.id,
+                              })
+                            }
+                          >
+                            Reassign
+                          </Button>
+                        )}
+                        {PLANNED_STATUSES.includes(selectedOrder.status) && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            icon={<CalendarCog />}
+                            onClick={() =>
+                              setPlannerAction({
+                                kind: 'override',
+                                orderLineId: line.id,
+                              })
+                            }
+                          >
+                            Override promise
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    {planLine ? (
+                      <>
+                        <div className="plan-line-stats">
+                          <div>
+                            <span>Requested</span>
+                            <strong>{line.quantity}</strong>
+                          </div>
+                          <div>
+                            <span>Allocated</span>
+                            <strong>{planLine.allocatedQuantity}</strong>
+                          </div>
+                          <div>
+                            <span>Backordered</span>
+                            <strong
+                              className={planLine.backorderedQuantity > 0 ? 'text-danger' : undefined}
+                            >
+                              {planLine.backorderedQuantity}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>Promised</span>
+                            <strong>
+                              {formatDate(planLine.promisedShipDate)}
+                              {planLine.isLate && (
+                                <Badge tone="warning" className="inline-badge">
+                                  Late
+                                </Badge>
+                              )}
+                              {planLine.promiseOverridden && (
+                                <Badge tone="accent" className="inline-badge">
+                                  Override
+                                </Badge>
+                              )}
+                            </strong>
+                          </div>
+                        </div>
+
+                        <div className="plan-sources">
+                          {planLine.allocations.length === 0 ? (
+                            <span className="source-chip is-empty">
+                              No supply allocated
+                            </span>
+                          ) : (
+                            planLine.allocations.map((allocation, index) => (
+                              <span
+                                key={`${line.id}-${index}`}
+                                className={`source-chip ${allocation.source === 'ON_HAND' ? 'is-onhand' : 'is-inbound'}`}
+                              >
+                                <strong>{allocation.quantity}</strong>
+                                {allocation.warehouseCode} ·{' '}
+                                {allocation.source === 'ON_HAND'
+                                  ? 'on hand'
+                                  : `inbound ${allocation.receiptId ?? ''}`}
+                                {allocation.expectedArrivalTime &&
+                                  ` · ETA ${formatDate(allocation.expectedArrivalTime)}`}
+                              </span>
+                            ))
+                          )}
+                          {planLine.backorderedQuantity > 0 && (
+                            <span className="source-chip is-short">
+                              <strong>{planLine.backorderedQuantity}</strong>
+                              backordered
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="plan-reason">
+                          {planLine.promiseReason}
+                          {planLine.promiseOverridden && (
+                            <>
+                              {' '}
+                              Computed date:{' '}
+                              {formatDate(planLine.computedPromisedShipDate)}.
+                            </>
+                          )}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="plan-reason">
+                        {line.quantity} units requested.{' '}
+                        {planLoading ? 'Refreshing plan...' : 'Not in the current plan.'}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="detail-columns">
+              <div>
+                <div className="section-title">
+                  <h3>Status timeline</h3>
+                </div>
+                {timelineLoading ? (
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    <Skeleton height={12} width="70%" />
+                    <Skeleton height={12} width="55%" />
+                  </div>
+                ) : timeline?.id === selectedOrder.id &&
+                  timeline.statusHistory.length > 0 ? (
+                  <ol className="timeline">
+                    {timeline.statusHistory.map((event) => (
+                      <li key={event.id} className="timeline-item">
+                        <span className="timeline-dot" />
+                        <div>
+                          <strong>
+                            {event.fromStatus
+                              ? `${humanize(event.fromStatus)} → ${humanize(event.toStatus)}`
+                              : `Created as ${humanize(event.toStatus).toLowerCase()}`}
+                          </strong>
+                          <span>{formatDateTime(event.changedAt)}</span>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="text-muted">No timeline events found.</p>
+                )}
+              </div>
+
+              <div>
+                <div className="section-title">
+                  <h3>Activity and audit trail</h3>
+                </div>
+                {orderActivityLoading && orderActivityId === selectedOrder.id ? (
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    <Skeleton height={12} width="80%" />
+                    <Skeleton height={12} width="60%" />
+                  </div>
+                ) : orderActivityId === selectedOrder.id &&
+                  orderActivity.length > 0 ? (
+                  <ol className="timeline">
+                    {orderActivity.map((entry) => (
+                      <li key={entry.id} className="timeline-item">
+                        <span className="timeline-dot is-accent" />
+                        <div>
+                          <strong>{formatAuditAction(entry.action)}</strong>
+                          <span>
+                            {formatDateTime(entry.createdAt)} · {entry.actor}
+                          </span>
+                          {entry.reason && (
+                            <span className="timeline-reason">
+                              “{entry.reason}”
+                            </span>
+                          )}
+                          <AuditChanges entry={entry} />
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="text-muted">
+                    No audited activity yet. Changes made from now on are
+                    recorded here.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </Drawer>
+
+      {/* Create / edit */}
+      <Modal
+        open={formOpen}
+        onClose={closeForm}
+        size="lg"
+        title={editingOrder ? `Edit ${editingOrder.orderNumber}` : 'New order'}
+        description={
+          editingOrder
+            ? 'Only draft orders can be edited. Changes are recorded in the audit log.'
+            : 'Orders start as drafts. Confirm them to include them in the allocation plan.'
+        }
+        footer={
+          <>
+            <Button onClick={closeForm}>Cancel</Button>
+            <Button
+              variant="primary"
+              type="submit"
+              form="order-form"
+              loading={saving}
+            >
+              {editingOrder ? 'Save changes' : 'Create order'}
+            </Button>
+          </>
+        }
+      >
+        <form id="order-form" className="form-grid" onSubmit={handleSubmit}>
+          {(formError || error) && (
+            <Alert tone="danger" className="span-2">
+              {formError || error}
+            </Alert>
           )}
 
-          <div className="order-timeline">
-            <h3>Status timeline</h3>
-            {timelineLoading ? (
-              <p className="muted-text">Loading timeline...</p>
-            ) : timeline?.id === selectedOrder.id &&
-              timeline.statusHistory.length > 0 ? (
-              <ol>
-                {timeline.statusHistory.map((event) => (
-                  <li key={event.id}>
-                    <strong>
-                      {event.fromStatus ?? 'ORDER CREATED'} → {event.toStatus}
-                    </strong>
-                    <span>{formatDateTime(event.changedAt)}</span>
-                  </li>
-                ))}
-              </ol>
-            ) : (
-              <p className="muted-text">No timeline events found.</p>
-            )}
-          </div>
+          {!editingOrder && (
+            <Field label="Order number" required>
+              <input
+                className="input"
+                value={form.orderNumber}
+                onChange={(event) =>
+                  updateFormField('orderNumber', event.target.value)
+                }
+                minLength={3}
+                maxLength={100}
+                required
+                placeholder="e.g. SCM-ORD-001"
+              />
+            </Field>
+          )}
 
-          <div className="order-timeline">
-            <h3>Activity and audit trail</h3>
-            {orderActivityLoading && orderActivityId === selectedOrder.id ? (
-              <p className="muted-text">Loading activity...</p>
-            ) : orderActivityId === selectedOrder.id &&
-              orderActivity.length > 0 ? (
-              <ol className="order-activity">
-                {orderActivity.map((entry) => (
-                  <li key={entry.id}>
-                    <strong>{formatAuditAction(entry.action)}</strong>
-                    <span>
-                      {new Date(entry.createdAt).toLocaleString()} ·{' '}
-                      {entry.actor}
-                    </span>
-                    {entry.reason && (
-                      <span className="order-activity-reason">
-                        Reason: {entry.reason}
-                      </span>
-                    )}
-                    <AuditChanges entry={entry} />
-                  </li>
-                ))}
-              </ol>
-            ) : (
-              <p className="muted-text">
-                No audited activity yet. Changes made from now on are recorded
-                here.
-              </p>
-            )}
+          <Field label="Customer name" required>
+            <input
+              className="input"
+              value={form.customerName}
+              onChange={(event) =>
+                updateFormField('customerName', event.target.value)
+              }
+              minLength={2}
+              maxLength={150}
+              required
+              placeholder="Customer name"
+            />
+          </Field>
+
+          <Field label="Priority">
+            <select
+              className="select"
+              value={form.priority}
+              onChange={(event) =>
+                updateFormField('priority', event.target.value as Priority)
+              }
+            >
+              {(['HIGH', 'MED', 'LOW'] as Priority[]).map((priority) => (
+                <option key={priority} value={priority}>
+                  {PRIORITY_LABEL[priority]}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Requested ship date">
+            <input
+              className="input"
+              type="date"
+              value={form.requestedShipDate}
+              onChange={(event) =>
+                updateFormField('requestedShipDate', event.target.value)
+              }
+            />
+          </Field>
+
+          <div className="span-2 line-editor">
+            <div className="line-editor-head">
+              <div>
+                <h3>Order lines</h3>
+                <p className="text-muted">
+                  SKU, quantity and an optional preferred warehouse.
+                </p>
+              </div>
+              <Button size="sm" icon={<Plus />} onClick={addLine}>
+                Add line
+              </Button>
+            </div>
+
+            {form.lines.map((line, index) => (
+              <div className="line-editor-row" key={index}>
+                <span className="line-index">{index + 1}</span>
+                <Field label="SKU" required>
+                  <select
+                    className="select"
+                    value={line.skuId}
+                    onChange={(event) =>
+                      updateLine(index, 'skuId', event.target.value)
+                    }
+                    required
+                  >
+                    <option value="">Select SKU</option>
+                    {skus.map((sku) => (
+                      <option value={sku.id} key={sku.id}>
+                        {sku.skuCode} — {sku.name}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Quantity" required>
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={line.quantity}
+                    onChange={(event) =>
+                      updateLine(index, 'quantity', event.target.value)
+                    }
+                    required
+                  />
+                </Field>
+                <Field label="Preferred warehouse">
+                  <select
+                    className="select"
+                    value={line.preferredWarehouseId}
+                    onChange={(event) =>
+                      updateLine(index, 'preferredWarehouseId', event.target.value)
+                    }
+                  >
+                    <option value="">No preference</option>
+                    {warehouses.map((warehouse) => (
+                      <option value={warehouse.id} key={warehouse.id}>
+                        {warehouse.code} — {warehouse.name}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<Trash2 />}
+                  disabled={form.lines.length === 1}
+                  onClick={() => removeLine(index)}
+                  aria-label={`Remove line ${index + 1}`}
+                  className="line-remove"
+                />
+              </div>
+            ))}
           </div>
-        </section>
-      )}
+        </form>
+      </Modal>
     </div>
   );
 }
