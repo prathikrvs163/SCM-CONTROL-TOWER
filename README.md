@@ -72,9 +72,31 @@ The application also includes AI-powered features to summarize operational excep
 | AI integration | Google Gemini API |
 | Testing | Vitest, React Testing Library |
 | Code quality | ESLint, Oxlint |
-| Infrastructure | Docker Compose |
+| Infrastructure | Docker, Docker Compose, Nginx |
 
 ## Architecture
+
+### Containerized deployment
+
+```text
+Browser (localhost:8080)
+        |
+        v
+Nginx + React static assets (frontend:80)
+        | /api/* (prefix stripped)
+        v
+NestJS API (backend:3000)
+        | Prisma / MariaDB adapter
+        v
+MySQL (mysql:3306) ----> Persistent external Docker volume
+        ^
+        | Prisma migrate deploy
+One-shot migration container
+```
+
+All services communicate over a dedicated Docker bridge network. The frontend and MySQL host ports are bound to loopback; the backend port is internal only. MySQL must become healthy before migrations run, and the migration job must succeed before the backend starts. The frontend starts after the backend becomes healthy.
+
+### Application modules
 
 ```text
 React + TypeScript Frontend
@@ -118,147 +140,192 @@ SCM-CONTROL-TOWER/
 |       +-- audit/
 |       +-- exceptions/
 |       +-- inbound-receipts/
+|       +-- health/
 |       +-- inventory/
 |       +-- orders/
 |       +-- planner-actions/
 |       +-- prisma/
 |       +-- skus/
 |       +-- warehouses/
+|   +-- test/              (API tests against a real MySQL database)
+|   +-- Dockerfile
 |
 +-- frontend/
 |   +-- src/
-|       +-- app/
-|       +-- components/
-|       +-- features/
-|       +-- hooks/
-|       +-- layouts/
-|       +-- pages/
-|       +-- services/
-|       +-- test/
+|       +-- app/           (Redux store, typed hooks, theme and feedback providers)
+|       +-- components/    (shared UI components and SVG charts)
+|       +-- features/      (Redux slices and feature components per domain)
+|       +-- layout/        (app shell, sidebar navigation, command palette)
+|       +-- pages/         (one component per route)
+|       +-- services/      (Axios API client)
+|       +-- styles/        (design tokens, base, component and page styles)
+|       +-- test/          (test setup)
+|       +-- types/         (API response types)
+|       +-- utils/         (formatting and order-health helpers)
+|   +-- Dockerfile
+|   +-- nginx.conf
 |
++-- .env.example
 +-- docker-compose.yml
 +-- .gitignore
 +-- README.md
 ```
 
-## Prerequisites
-
-Install the following before running the application:
-
-- Node.js 24 or a compatible supported version.
-- npm.
-- Docker Desktop with Docker Compose.
-- Git.
-- A Google Gemini API key for AI functionality.
-
 ## Getting Started
 
-### 1. Clone the repository
+### Option A — Full-stack Docker deployment (recommended)
 
-```bash
+**Prerequisites:** Git, Docker Engine or Docker Desktop with Docker Compose, and internet access for the initial image build. A Gemini API key is needed only for AI functionality. Commands below use PowerShell.
+
+```powershell
 git clone https://github.com/prathikrvs163/SCM-CONTROL-TOWER.git
 cd SCM-CONTROL-TOWER
+Copy-Item .env.example .env
 ```
 
-### 2. Start MySQL using Docker Compose
+Edit the root `.env`:
 
-From the repository root:
+```env
+MYSQL_ROOT_PASSWORD=your_mysql_password
+MYSQL_DATABASE=scm_control_tower
+```
 
-```bash
+Choose a strong URL-safe password (the Compose connection string interpolates it directly). For an existing database volume, use its current password; changing the environment variable does not reset MySQL credentials.
+
+Create `backend/.env`:
+
+```env
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-3.8-flash
+```
+
+The backend environment file must exist even if AI is not used. Compose supplies `DATABASE_URL`, `PORT` and `NODE_ENV` for the containers. Never commit either `.env` file.
+
+Create the external volume (safe to run if it already exists):
+
+```powershell
+docker volume create scm-control-tower_mysql_data
+docker compose config --quiet
+docker compose up -d --build
+docker compose ps -a
+```
+
+Open <http://localhost:8080>. The migration container should exit with code 0; MySQL, backend and frontend should become healthy. A fresh database is empty until sample data is seeded.
+
+| Service | Address | Purpose |
+|---|---|---|
+| Frontend | <http://localhost:8080> | React served by Nginx |
+| API | <http://localhost:8080/api> | Nginx reverse proxy to NestJS |
+| Backend | `backend:3000` | Internal REST API |
+| MySQL | `127.0.0.1:3306` | Local database access; containers use `mysql:3306` |
+| Migration | One-shot job | Applies committed Prisma migrations |
+
+The backend uses a multi-stage Node.js image with production dependencies and runs as the non-root `node` user. The migration image retains the Prisma CLI. OpenSSL and CA certificates are installed in the backend build and runtime stages. The frontend is compiled with Vite and served by an Nginx Alpine runtime without Node.js. `.dockerignore` files exclude local dependencies, build artifacts and environment secrets.
+
+#### Health checks
+
+```powershell
+Invoke-RestMethod http://localhost:8080/health
+Invoke-RestMethod http://localhost:8080/api/health/live
+Invoke-RestMethod http://localhost:8080/api/health/ready
+```
+
+| Check | Expected response |
+|---|---|
+| Frontend `/health` | HTTP 200, `healthy` |
+| Backend `/health/live` | HTTP 200, process uptime and timestamp |
+| Backend `/health/ready` | HTTP 200, database connected; HTTP 503 on database query failure |
+| MySQL | Authenticated `SELECT 1` succeeds |
+
+Docker uses `wget` for the frontend and Node.js `fetch` for backend readiness. Health status alone does not trigger automatic container restarts.
+
+#### Storage and operational commands
+
+```powershell
+docker compose logs --tail=100 backend
+docker compose logs migration
+docker compose logs --tail=100 frontend
+docker compose down
+docker compose up -d
+```
+
+The external volume `scm-control-tower_mysql_data` retains MySQL data across container recreation. Do not delete it unless intentionally discarding the database.
+
+Create a logical backup from the repository root:
+
+```powershell
+$backupName = "scm-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss').sql"
+docker exec scm-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump -u root --single-transaction --no-tablespaces "$MYSQL_DATABASE" > /tmp/scm-backup.sql'
+if ($LASTEXITCODE -ne 0) { throw "Database backup failed" }
+New-Item -ItemType Directory -Force "$HOME\scm-backups"
+docker cp "scm-mysql:/tmp/scm-backup.sql" "$HOME\scm-backups\$backupName"
+if ($LASTEXITCODE -ne 0) { throw "Backup copy failed" }
+Get-Item "$HOME\scm-backups\$backupName"
+docker exec scm-mysql rm /tmp/scm-backup.sql
+```
+
+Keep backups private and outside Git. Backup creation has been verified; restoration has not yet been tested.
+
+#### Troubleshooting
+
+- **Build fails with `ECONNRESET`:** check network connectivity and retry `docker compose build`.
+- **Migration fails:** inspect `docker compose logs migration` before starting the backend.
+- **Frontend unhealthy:** inspect `docker inspect scm-frontend --format '{{json .State.Health}}'`. The Nginx runtime requires the `wget` probe, not a Node.js probe.
+- **After changing only a frontend health check:** run `docker compose up -d --no-deps --force-recreate frontend`.
+- **Port conflict:** stop the conflicting local service or adjust the host port mapping.
+
+### Option B — Local development
+
+Install Node.js 24 and npm in addition to the Docker prerequisites. Configure the root `.env` and create the external volume as above. Stop the full stack if it is running, then start only MySQL:
+
+```powershell
 docker compose up -d mysql
 ```
 
-The development database configuration is:
-
-- Database: `scm_control_tower`
-- Host: `localhost`
-- Port: `3306`
-- Root password: `scm_dev_password`
-
-These credentials are for local development only. Replace them with secure credentials for any shared or production environment.
-
-### 3. Configure backend environment variables
-
-Create a file named `backend/.env`:
+For local backend development, add the following to `backend/.env`, replacing the placeholder with the same password used in the root `.env`:
 
 ```env
-DATABASE_URL="mysql://root:scm_dev_password@localhost:3306/scm_control_tower"
+DATABASE_URL="mysql://root:your_mysql_password@localhost:3306/scm_control_tower"
 PORT=3000
-
-GEMINI_API_KEY="your_gemini_api_key"
-GEMINI_MODEL="gemini-3.8-flash"
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-3.8-flash
 ```
-
-Replace the Gemini API key with your own key.
-
-The Gemini variables are required for AI functionality. Do not commit `.env` or expose API keys in source control.
-
-### 4. Install backend dependencies
 
 ```powershell
 cd backend
-npm install
-```
-
-### 5. Generate the Prisma client and apply migrations
-
-```powershell
+npm ci
 npx prisma generate --config .\prisma7.config.ts
 npx prisma migrate deploy --config .\prisma7.config.ts
-```
-
-These commands generate the Prisma client and apply the committed database migrations.
-
-### 6. Seed sample data
-
-```powershell
 npm run seed
-```
-
-The seed script creates sample warehouses, SKUs, inventory balances, inbound receipts, and customer orders.
-
-It is designed to avoid duplicating existing records. It does not reset the database or reconcile changes to records that already exist.
-
-### 7. Start the backend
-
-```powershell
 npm run start:dev
 ```
 
-Backend API:
+The seed script creates demonstration data and skips existing records; it does not reset the database. To seed the Docker deployment, use the same local backend configuration and run the dependency installation, Prisma generation and seed commands while the Docker database is running; do not start a second backend unless needed.
 
-```text
-http://localhost:3000
-```
-
-### 8. Configure and start the frontend
-
-Open another terminal:
+In another terminal, from the repository root:
 
 ```powershell
 cd frontend
-npm install
-```
-
-Optionally create `frontend/.env`:
-
-```env
-VITE_API_BASE_URL=http://localhost:3000
-```
-
-Start the frontend:
-
-```powershell
+npm ci
 npm run dev
 ```
 
-Open the Vite development URL displayed in the terminal, normally:
-
-```text
-http://localhost:5173
-```
+For local development, optionally set `VITE_API_BASE_URL=http://localhost:3000` in `frontend/.env`. Open <http://localhost:5173>. The local backend listens on <http://localhost:3000>.
 
 ## Testing and Quality Checks
+
+### Container deployment verification
+
+| Check | Result |
+|---|---|
+| Backend unit tests (including health checks) | 82 passed |
+| Image builds and Compose startup | Passed |
+| Prisma migrations and health probes | Passed |
+| Browser navigation and API proxy | Passed |
+| Manual SKU, inventory, order, backorder and inbound workflow | Passed (user-confirmed) |
+| Shipment, final inventory and audit records retained after recreation | Passed (user-confirmed) |
+| Logical backup creation | Passed |
+| Backup restoration and deliberate failure/recovery tests | Pending |
 
 ### Backend
 
@@ -339,6 +406,8 @@ The seed process skips records that already exist, making it suitable for repeat
 
 | Variable | Application | Purpose |
 |---|---|---|
+| `MYSQL_ROOT_PASSWORD` | Root `.env` / Compose | MySQL root password |
+| `MYSQL_DATABASE` | Root `.env` / Compose | Database name (default `scm_control_tower`) |
 | `DATABASE_URL` | Backend | MySQL connection string |
 | `DATABASE_URL_TEST` | Backend (optional) | Database for `npm run test:e2e`; defaults to the `DATABASE_URL` database name plus `_test`, and must end in `_test` |
 | `PORT` | Backend | API server port; defaults to 3000 |
@@ -348,10 +417,12 @@ The seed process skips records that already exist, making it suitable for repeat
 
 ## REST API
 
-All routes are served from `http://localhost:3000`. They are currently **unversioned** (no `/api/v1` prefix) and **unauthenticated**; both are listed under [Known Gaps](#known-gaps-and-next-steps). Request bodies are validated with a global `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`).
+Routes are served from `http://localhost:3000` in local development and `http://localhost:8080/api` in Docker (Nginx strips the `/api` prefix). They are currently **unversioned** (no `/api/v1` prefix) and **unauthenticated**; both are listed under [Known Gaps](#known-gaps-and-next-steps). Request bodies are validated with a global `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`).
 
 | Method | Path | Purpose |
 |---|---|---|
+| `GET` | `/health/live` | Process liveness |
+| `GET` | `/health/ready` | Database readiness |
 | `GET` | `/skus?includeInactive=true` | List SKUs |
 | `GET` / `POST` / `PATCH` | `/skus`, `/skus/:id` | Read, create, update a SKU |
 | `DELETE` | `/skus/:id` | Soft delete: sets `isActive = false` |
@@ -579,12 +650,13 @@ Compared with the full brief, these items are not implemented yet, roughly in pr
 1. **Order edits after confirmation.** Defined behavior for quantity changes and line additions or deletions on `CONFIRMED` orders, with an optimistic version check.
 2. **More exception types.** Detect receipts that are delayed (the audit log now holds the original expected arrival) or canceled under an order, and high-priority orders without enough on-hand.
 3. **Richer fulfillment timeline.** A planned location column, promise reasons naming the receipt and date (for example "Waiting for inbound DEMO-RCV-001 arriving 20 Nov"), and a SKU-level supply and demand event timeline on the order detail page.
-4. **Search, filters and sorting.** Date range and exception-type filters on orders, and sorting by promised date, risk and order age.
+4. **Search and filters.** The orders list already searches by order number or customer, filters by status, priority and fulfillment risk, and sorts by newest, oldest, risk, earliest promise, requested ship date and priority. Still missing: date-range and exception-type filters on orders.
 5. **AI review and confirm flow.** Edit a customer draft and save it as a "sent message" record (with the planner's accept or discard decision in the audit log), and per-order exception summaries ("What happened", "Current plan", "Next best actions").
 6. **API versioning and authentication.** A `/api/v1` global prefix and a basic auth guard; the audit `actor` would then come from the signed-in user instead of the fixed `planner`.
 7. **Audit log housekeeping.** Paging past the 500-entry limit, date-range filters, and a retention policy.
 8. **Bulk operations.** Bulk creation of receipts and orders.
 9. **CI.** Run the unit tests, the API tests (against a MySQL service container) and both builds on every push.
+10. **Infrastructure hardening.** Use separate least-privilege database credentials, rotate the previously committed development password, verify backup restoration, test backend/database failure recovery and automatic restart behavior, and add TLS before exposing the application publicly.
 
 Longer term: optional SKU lead time and location timezone, AI shortage insights, real-time updates, deployment and CI/CD, and centralized monitoring.
 
