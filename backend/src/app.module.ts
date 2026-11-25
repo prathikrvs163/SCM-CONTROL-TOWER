@@ -12,6 +12,7 @@ import { ExceptionsModule } from './exceptions/exceptions.module.js';
 import { AiModule } from './ai/ai.module.js';
 import { AuditModule } from './audit/audit.module.js';
 import { PlannerActionsModule } from './planner-actions/planner-actions.module.js';
+import { HealthModule } from './health/health.module.js';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { PlannerActionsModule } from './planner-actions/planner-actions.module.j
     ExceptionsModule,
     AiModule,
     PlannerActionsModule,
+    HealthModule,
   ],
   controllers: [AppController],
 })
